@@ -399,13 +399,20 @@ async function executeTrade(signal, lotSize) {
 
   const res = await http.post(`${BASE}/v3/accounts/${ACCOUNT}/orders`, order);
   const fill    = res.data.orderFillTransaction;
-  const fillPx  = fill?.price ? parseFloat(fill.price) : signal.entryPrice;
-  const tradeId = fill?.tradeOpened?.tradeID || res.data.relatedTransactionIDs?.[1];
+  // ONLY a genuine fill (with an opened trade) counts. Do NOT fall back to
+  // relatedTransactionIDs — on a cancelled/unfilled order that grabs the cancel
+  // transaction id and records a phantom "open" trade that never existed.
+  const tradeId = fill?.tradeOpened?.tradeID;
 
   if (!tradeId) {
-    console.warn('Order placed but no tradeId returned:', JSON.stringify(res.data).slice(0, 300));
+    const cancel = res.data.orderCancelTransaction;
+    const reason = cancel?.reason || res.data.orderRejectTransaction?.rejectReason || 'unfilled (no fill, no cancel reason)';
+    console.warn(`Order NOT filled — reason: ${reason} | ${units} units ${INSTRUMENT} | ${JSON.stringify(res.data).slice(0, 400)}`);
+    writeLog({ type: 'ORDER_CANCELLED', reason, units, action: signal.action, mode: signal.mode });
     return res.data;
   }
+
+  const fillPx = fill.price ? parseFloat(fill.price) : signal.entryPrice;
 
   recordTradeOpen(tradeId, {
     action: signal.action,
