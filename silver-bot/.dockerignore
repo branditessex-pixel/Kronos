@@ -1,0 +1,8 @@
+node_modules
+.env
+*.bak
+performance.json
+trading-log.json
+equity-history.json
+live-risk-state.json
+daily-report-*.json
