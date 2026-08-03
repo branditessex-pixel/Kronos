@@ -4,7 +4,11 @@
   "description": "Silver (XAG/USD) demo bot — same regime-aware dual-sleeve model as the gold demo, on a practice account, to test whether the edge travels to a second market.",
   "main": "index.js",
   "scripts": {
+    "start": "node index.js",
     "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "engines": {
+    "node": ">=18"
   },
   "keywords": [],
   "author": "",
