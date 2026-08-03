@@ -1,0 +1,19 @@
+{
+  "name": "silver-demo-trader",
+  "version": "1.0.0",
+  "description": "Silver (XAG/USD) demo bot — same regime-aware dual-sleeve model as the gold demo, on a practice account, to test whether the edge travels to a second market.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "axios": "^1.15.0",
+    "dotenv": "^17.4.2",
+    "node-cron": "^4.2.1",
+    "resend": "^6.12.0"
+  }
+}
