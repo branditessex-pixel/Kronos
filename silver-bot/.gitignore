@@ -5,4 +5,5 @@ trading-log.json
 equity-history.json
 live-risk-state.json
 daily-report-*.json
+backtest-data/
 *.bak
