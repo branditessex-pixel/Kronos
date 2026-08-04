@@ -17,9 +17,9 @@
  *      sleeve actually has edge.
  *
  * Two sleeves, chosen by ADX(14) on H1:
- *   • TREND  (ADX > 22): H4-EMA50 bias → pullback to H1-EMA20 OR fresh breakout,
+ *   • TREND  (ADX > 18): H4-EMA50 bias → pullback to H1-EMA20 OR fresh breakout,
  *                        confirmed by one MACD check. SL 1.5×ATR, target 3R.
- *   • RANGE  (ADX < 18): fade the edges of the recent H1 range when RSI is
+ *   • RANGE  (ADX < 14): fade the edges of the recent H1 range when RSI is
  *                        stretched and the candle rejects. SL beyond the edge,
  *                        target the midline (~2R).
  *   • In between: hold the previous regime (hysteresis — no whipsawing).
@@ -56,8 +56,13 @@ const px = (n) => parseFloat(Number(n).toFixed(PRICE_DECIMALS));
 const MAX_CONCURRENT_TRADES = 6;   // demo — run more concurrently to gather a bigger sample to monitor
 
 // Regime thresholds (ADX-14 on H1) with a hysteresis gap so we don't flip-flop.
-const ADX_TREND_MIN = 22;
-const ADX_RANGE_MAX = 18;
+// SILVER-CALIBRATED (was gold's 22/18). Silver's first live day faded a genuine
+// uptrend: ADX ran ~19–20 there, which gold's 22 cutoff labelled as RANGE, so the
+// bot sold into strength. Lowering the trend cutoff to 18 makes an ADX ~19 move
+// trade WITH the trend; dropping the range cutoff to 14 means we only fade when
+// the market is genuinely flat/choppy, not when a trend is merely modest.
+const ADX_TREND_MIN = 18;
+const ADX_RANGE_MAX = 14;
 
 // Stops / targets, expressed in ATR and R multiples.
 const ATR_SL_MULT_TREND = 1.0;   // tightened 1.2 -> 1.0 — faster resolution
@@ -78,8 +83,8 @@ const MAX_TRADE_HOURS   = 6;     // time stop — cut a trade that hasn't reache
 const H4_NEUTRAL_PIPS      = 30;    // dead band around H4 EMA50
 const PULLBACK_ZONE_PIPS   = 130;   // how far from H1 EMA20 still counts as a pullback
 const BREAKOUT_MAX_CANDLES = 3;     // "fresh" breakout = ≤3 H1 closes beyond EMA20
-const RSI_HARD_BLOCK_HI    = 78;    // block BUY only when truly overbought
-const RSI_HARD_BLOCK_LO    = 22;    // block SELL only when truly oversold
+const RSI_HARD_BLOCK_HI    = 85;    // block BUY only at genuine exhaustion (was 78 — silver trends ran RSI 78–83 and got vetoed OUT of with-trend buys)
+const RSI_HARD_BLOCK_LO    = 15;    // block SELL only at genuine exhaustion (was 22)
 
 // RANGE sleeve tuning
 const RANGE_LOOKBACK   = 20;   // H1 candles defining the range

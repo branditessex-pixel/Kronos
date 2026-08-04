@@ -93,11 +93,11 @@ const SPECS = {
 // sweep isolates the regime thresholds. Keep these in sync with trader.js.
 const STRAT = {
   MAX_CONCURRENT_TRADES: 6,
-  // ── swept ──
-  ADX_TREND_MIN: 22,
-  ADX_RANGE_MAX: 18,
-  RSI_HARD_BLOCK_HI: 78,
-  RSI_HARD_BLOCK_LO: 22,
+  // ── swept (defaults mirror trader.js — silver-calibrated) ──
+  ADX_TREND_MIN: 18,
+  ADX_RANGE_MAX: 14,
+  RSI_HARD_BLOCK_HI: 85,
+  RSI_HARD_BLOCK_LO: 15,
   RANGE_RSI_HI: 60,
   RANGE_RSI_LO: 40,
   // ── fixed ──
