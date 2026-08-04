@@ -40,6 +40,9 @@ if (process.env.RUN_BACKTEST) {
   (async () => {
     try {
       const text = await runForEmail(instruments);
+      // Also dump to the Railway deploy logs as a fallback in case email is not
+      // configured on this service — the table is still readable there.
+      console.log('\n══════════ BACKTEST RESULTS (copy from here if no email) ══════════\n' + text + '\n═══════════════════════════════════════════════════════════════════\n');
       const html =
         `<div style="font-family:Arial,sans-serif;max-width:820px;margin:0 auto;">` +
         `<h2 style="margin:0 0 4px;">📊 Regime calibration backtest</h2>` +
