@@ -21,10 +21,46 @@ const fs   = require('fs');
 const path = require('path');
 
 const { runTradingCycle, runLightweightTrailUpdate } = require('./trader');
-const { sendAlert } = require('./alerts');
+const { sendAlert, sendReport } = require('./alerts');
 const { writeLog } = require('./log');
 const { sendDailyReport } = require('./daily-report');
 const { isLive, BOT_NAME, INSTRUMENT_LABEL } = require('./config');
+
+// ─── BACKTEST MODE ────────────────────────────────────────────────────────────
+// Set RUN_BACKTEST=XAG_USD (or XAG_USD,XAU_USD) in Railway, redeploy, and this
+// service runs the regime-threshold calibration ONCE, emails you the results
+// table, then idles WITHOUT trading. Remove the variable to resume normal trading.
+// Lets the whole thing be driven from a phone — no terminal needed.
+if (process.env.RUN_BACKTEST) {
+  const { runForEmail } = require('./backtest');
+  const instruments = process.env.RUN_BACKTEST.split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
+  const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  console.log(`[BACKTEST MODE] RUN_BACKTEST set — calibrating ${instruments.join(', ')}, then idling (NOT trading).`);
+
+  (async () => {
+    try {
+      const text = await runForEmail(instruments);
+      const html =
+        `<div style="font-family:Arial,sans-serif;max-width:820px;margin:0 auto;">` +
+        `<h2 style="margin:0 0 4px;">📊 Regime calibration backtest</h2>` +
+        `<p style="color:#666;margin:0 0 12px;">${esc(instruments.join(', '))} — replayed through the live engine. ` +
+        `Reply with this and I'll set the thresholds.</p>` +
+        `<pre style="font-size:12px;line-height:1.35;white-space:pre-wrap;background:#0d1117;color:#c9d1d9;` +
+        `padding:16px;border-radius:8px;overflow-x:auto;">${esc(text)}</pre>` +
+        `<p style="color:#999;font-size:12px;">⚠️ Remove the <b>RUN_BACKTEST</b> variable in Railway to resume trading.</p>` +
+        `</div>`;
+      await sendReport('📊 Backtest — regime calibration results', html);
+      console.log('[BACKTEST MODE] Done — results emailed. Remove RUN_BACKTEST to resume trading.');
+    } catch (err) {
+      console.error('[BACKTEST MODE] failed:', err.message);
+      try { await sendReport('📊 Backtest — FAILED', `<pre>${esc(err.stack || err.message)}</pre>`); } catch (_) {}
+    }
+    // Stay alive so Railway does not restart the container and re-run/re-email.
+    setInterval(() => {}, 1 << 30);
+  })();
+
+  return;   // Node wraps modules in a function — this skips all trading setup below.
+}
 
 // Morning briefing, daily summary and nightly health-check are intentionally NOT
 // wired up — the user only wants three emails: bot live, bot broken, end-of-day

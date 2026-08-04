@@ -645,4 +645,32 @@ async function main() {
   runSweep(inst, data);
 }
 
-main().catch(e => { console.error('ERROR:', e.message); process.exit(1); });
+// ═══════════════════════════════════════════════════════════════════════════
+// PROGRAMMATIC ENTRY — used by index.js "backtest mode" (RUN_BACKTEST env var)
+// so the results can be run on Railway and emailed, no terminal needed.
+// Captures everything runSweep prints and returns it as one text blob.
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function runForEmail(instruments) {
+  const lines = [];
+  const orig = console.log;
+  console.log = (...a) => lines.push(a.map(x => (typeof x === 'string' ? x : JSON.stringify(x))).join(' '));
+  try {
+    for (const inst of instruments) {
+      if (!SPECS[inst]) { console.log(`Skipping unknown instrument: ${inst}`); continue; }
+      let data = loadCached(inst);
+      if (!data) data = await fetchAndCache(inst);
+      runSweep(inst, data);
+    }
+  } finally {
+    console.log = orig;
+  }
+  return lines.join('\n');
+}
+
+module.exports = { runForEmail, runSweep, simulate, precomputeFeatures, SPECS, STRAT };
+
+// Only run the CLI when invoked directly (node backtest.js …), NOT when required.
+if (require.main === module) {
+  main().catch(e => { console.error('ERROR:', e.message); process.exit(1); });
+}
