@@ -115,6 +115,7 @@ const STRAT = {
   H4_NEUTRAL_PIPS: 30,
   PULLBACK_ZONE_PIPS: 130,
   BREAKOUT_MAX_CANDLES: 3,
+  CONTINUATION_ADX_MIN: 25,
   RANGE_LOOKBACK: 20,
   RANGE_EDGE_PCT: 0.30,
   RANGE_MIN_ATR: 2.0
@@ -272,10 +273,19 @@ function evaluateTrend(f, P, spec) {
     grade = macdFavours ? 'A' : 'B';
   } else if (onTrendSide) {
     const beyond = bias === 'BUY' ? f.beyondUp : f.beyondDown;
-    if (beyond > P.BREAKOUT_MAX_CANDLES) return hold('breakout stale');
     if (!macdFavours) return hold('breakout, MACD against');
-    entryMode = 'BREAKOUT';
-    grade = macdTurning ? 'A' : 'B';
+    if (beyond <= P.BREAKOUT_MAX_CANDLES) {
+      entryMode = 'BREAKOUT';
+      grade = macdTurning ? 'A' : 'B';
+    } else if (f.adx >= P.CONTINUATION_ADX_MIN) {
+      const last = f.lastCompleted;
+      const pulledBack = bias === 'BUY' ? last.close < last.open : last.close > last.open;
+      if (!pulledBack) return hold('strong trend, waiting for pullback candle');
+      entryMode = 'CONTINUATION';
+      grade = macdTurning ? 'A' : 'B';
+    } else {
+      return hold('breakout stale, ADX not strong enough');
+    }
   } else {
     return hold('wrong side of EMA20');
   }

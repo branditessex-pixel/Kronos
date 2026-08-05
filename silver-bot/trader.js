@@ -83,6 +83,7 @@ const MAX_TRADE_HOURS   = 6;     // time stop — cut a trade that hasn't reache
 const H4_NEUTRAL_PIPS      = 30;    // dead band around H4 EMA50
 const PULLBACK_ZONE_PIPS   = 130;   // how far from H1 EMA20 still counts as a pullback
 const BREAKOUT_MAX_CANDLES = 3;     // "fresh" breakout = ≤3 H1 closes beyond EMA20
+const CONTINUATION_ADX_MIN = 25;    // in a GENUINE strong trend (ADX≥this), join an already-run move on a pullback candle instead of sitting out. Fixes the "BUY breakout stale ×235" lockout where silver watched a 49-ADX rip go by and never boarded.
 const RSI_HARD_BLOCK_HI    = 85;    // block BUY only at genuine exhaustion (was 78 — silver trends ran RSI 78–83 and got vetoed OUT of with-trend buys)
 const RSI_HARD_BLOCK_LO    = 15;    // block SELL only at genuine exhaustion (was 22)
 
@@ -195,16 +196,33 @@ function evaluateTrend(candles1h, candles4h, currentPrice, adx) {
     if (!macdTurning) return hold(`${bias} pullback but MACD not turning back yet (hist ${macd.histogram.toFixed(2)} vs prev ${macd.prevHistogram.toFixed(2)})`);
     grade = macdFavours ? 'A' : 'B';   // A if momentum has already flipped to the trend side
   } else if (onTrendSide) {
-    // Breakout: only if fresh AND momentum already confirms the direction (sign check)
+    // Count consecutive H1 closes beyond EMA20 — "freshness" of the breakout.
     let beyond = 0;
     for (let i = closes1h.length - 1; i >= 0; i--) {
       const isBeyond = bias === 'BUY' ? closes1h[i] > h1Ema20 : closes1h[i] < h1Ema20;
       if (isBeyond) beyond++; else break;
     }
-    if (beyond > BREAKOUT_MAX_CANDLES) return hold(`${bias} breakout stale (${beyond} candles beyond EMA20)`);
     if (!macdFavours) return hold(`${bias} breakout but MACD histogram ${macd.histogram.toFixed(2)} against it`);
-    entryMode = 'BREAKOUT';
-    grade = macdTurning ? 'A' : 'B';   // A if still strengthening
+
+    if (beyond <= BREAKOUT_MAX_CANDLES) {
+      // Fresh breakout — the original path.
+      entryMode = 'BREAKOUT';
+      grade = macdTurning ? 'A' : 'B';   // A if still strengthening
+    } else if (adx >= CONTINUATION_ADX_MIN) {
+      // TREND CONTINUATION — the move has already run (stale breakout), but it's a
+      // GENUINE strong trend. Rather than sit out the whole thing (the "breakout
+      // stale ×235" case), join it on a minor PULLBACK candle: the last completed
+      // candle closed against the trend (a red bar in an uptrend / green in a down).
+      // That gets us aboard on a dip instead of chasing the vertical, and the
+      // RSI hard-block below still vetoes genuine exhaustion.
+      const last = candles1h[candles1h.length - 2] || candles1h[candles1h.length - 1];
+      const pulledBack = bias === 'BUY' ? last.close < last.open : last.close > last.open;
+      if (!pulledBack) return hold(`${bias} strong trend (ADX ${adx.toFixed(0)}) but waiting for a pullback candle to join on`);
+      entryMode = 'CONTINUATION';
+      grade = macdTurning ? 'A' : 'B';
+    } else {
+      return hold(`${bias} breakout stale (${beyond} candles beyond EMA20), ADX ${adx.toFixed(0)} < ${CONTINUATION_ADX_MIN} — not a strong enough trend to chase`);
+    }
   } else {
     return hold(`${bias} bias but price ${distPips.toFixed(0)} pips on wrong side of H1 EMA20`);
   }
