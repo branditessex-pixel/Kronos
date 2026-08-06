@@ -273,16 +273,18 @@ function evaluateTrend(f, P, spec) {
     grade = macdFavours ? 'A' : 'B';
   } else if (onTrendSide) {
     const beyond = bias === 'BUY' ? f.beyondUp : f.beyondDown;
-    if (!macdFavours) return hold('breakout, MACD against');
     if (beyond <= P.BREAKOUT_MAX_CANDLES) {
+      if (!macdFavours) return hold('breakout, MACD against');
       entryMode = 'BREAKOUT';
       grade = macdTurning ? 'A' : 'B';
     } else if (f.adx >= P.CONTINUATION_ADX_MIN) {
+      // Continuation does NOT require macdFavours — a pullback in a grind has weak
+      // momentum by definition. ADX + trend side + pullback candle + RSI cap confirm.
       const last = f.lastCompleted;
       const pulledBack = bias === 'BUY' ? last.close < last.open : last.close > last.open;
       if (!pulledBack) return hold('strong trend, waiting for pullback candle');
       entryMode = 'CONTINUATION';
-      grade = macdTurning ? 'A' : 'B';
+      grade = macdFavours ? 'A' : 'B';
     } else {
       return hold('breakout stale, ADX not strong enough');
     }

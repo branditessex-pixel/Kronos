@@ -202,24 +202,25 @@ function evaluateTrend(candles1h, candles4h, currentPrice, adx) {
       const isBeyond = bias === 'BUY' ? closes1h[i] > h1Ema20 : closes1h[i] < h1Ema20;
       if (isBeyond) beyond++; else break;
     }
-    if (!macdFavours) return hold(`${bias} breakout but MACD histogram ${macd.histogram.toFixed(2)} against it`);
-
     if (beyond <= BREAKOUT_MAX_CANDLES) {
-      // Fresh breakout — the original path.
+      // Fresh breakout — momentum must already be on-side (the original path).
+      if (!macdFavours) return hold(`${bias} breakout but MACD histogram ${macd.histogram.toFixed(2)} against it`);
       entryMode = 'BREAKOUT';
       grade = macdTurning ? 'A' : 'B';   // A if still strengthening
     } else if (adx >= CONTINUATION_ADX_MIN) {
       // TREND CONTINUATION — the move has already run (stale breakout), but it's a
-      // GENUINE strong trend. Rather than sit out the whole thing (the "breakout
-      // stale ×235" case), join it on a minor PULLBACK candle: the last completed
-      // candle closed against the trend (a red bar in an uptrend / green in a down).
-      // That gets us aboard on a dip instead of chasing the vertical, and the
-      // RSI hard-block below still vetoes genuine exhaustion.
+      // GENUINE strong trend. Join it on a minor PULLBACK candle (last completed
+      // candle closed against the trend). Crucially this does NOT require a positive
+      // MACD histogram: a pullback in a grinding trend has waning/negative momentum
+      // by definition — silver rose 60.5→62 at ADX ~49 with the histogram slightly
+      // negative the whole way, and that vetoed every with-trend buy. Here the
+      // confirmation is ADX≥25 + price on the trend side + a pullback candle + the
+      // RSI exhaustion cap below, not the lagging oscillator.
       const last = candles1h[candles1h.length - 2] || candles1h[candles1h.length - 1];
       const pulledBack = bias === 'BUY' ? last.close < last.open : last.close > last.open;
       if (!pulledBack) return hold(`${bias} strong trend (ADX ${adx.toFixed(0)}) but waiting for a pullback candle to join on`);
       entryMode = 'CONTINUATION';
-      grade = macdTurning ? 'A' : 'B';
+      grade = macdFavours ? 'A' : 'B';   // A if momentum is also on-side, else B
     } else {
       return hold(`${bias} breakout stale (${beyond} candles beyond EMA20), ADX ${adx.toFixed(0)} < ${CONTINUATION_ADX_MIN} — not a strong enough trend to chase`);
     }
