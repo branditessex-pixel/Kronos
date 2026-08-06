@@ -96,6 +96,8 @@ const STRAT = {
   // ── swept (defaults mirror trader.js — silver-calibrated) ──
   ADX_TREND_MIN: 18,
   ADX_RANGE_MAX: 14,
+  ER_LOOKBACK: 20,
+  ER_TREND_MIN: 0.30,   // trend-quality filter: high ADX + low ER = chop, not a trend
   RSI_HARD_BLOCK_HI: 85,
   RSI_HARD_BLOCK_LO: 15,
   RANGE_RSI_HI: 60,
@@ -205,6 +207,15 @@ function precomputeFeatures(h1, h4, spec) {
 
     const adx = calcADX(win1h, 14);
     const atr = calcATR(win1h, 14);
+    // Kaufman efficiency ratio (net move / total path) over ER_LOOKBACK closes
+    let er = 0;
+    if (closes1h.length > STRAT.ER_LOOKBACK) {
+      const m = closes1h.length;
+      const net = Math.abs(closes1h[m - 1] - closes1h[m - 1 - STRAT.ER_LOOKBACK]);
+      let path = 0;
+      for (let k = m - STRAT.ER_LOOKBACK; k < m; k++) path += Math.abs(closes1h[k] - closes1h[k - 1]);
+      er = path === 0 ? 0 : net / path;
+    }
     const h1Ema20 = calculateEMA(closes1h, 20);
     const rsi = calculateRSI(closes1h, 14);
     const macd = calculateMACD(closes1h);
@@ -226,7 +237,7 @@ function precomputeFeatures(h1, h4, spec) {
 
     feats[i] = {
       i, time: cur.time, price, high: cur.high, low: cur.low,
-      adx, atr, atrPips: atr / pip, h1Ema20, rsi,
+      adx, er, atr, atrPips: atr / pip, h1Ema20, rsi,
       macdHist: macd.histogram, macdPrevHist: macd.prevHistogram,
       h4Ema50, beyondUp, beyondDown,
       rangeHigh, rangeLow, width, posInRange, lastCompleted
@@ -242,10 +253,10 @@ function precomputeFeatures(h1, h4, spec) {
 const hold = (r) => ({ shouldEnter: false, reasoning: r });
 const clampSl = (p, P) => Math.max(P.MIN_SL_PIPS, Math.min(P.MAX_SL_PIPS, p));
 
-function detectRegime(adx, P, state) {
+function detectRegime(adx, er, P, state) {
   let regime;
-  if (adx >= P.ADX_TREND_MIN) regime = 'TREND';
-  else if (adx <= P.ADX_RANGE_MAX) regime = 'RANGE';
+  if (adx >= P.ADX_TREND_MIN && er >= P.ER_TREND_MIN) regime = 'TREND';
+  else if (adx <= P.ADX_RANGE_MAX || er < P.ER_TREND_MIN) regime = 'RANGE';
   else regime = state.lastRegime;
   state.lastRegime = regime;
   return regime;
@@ -397,7 +408,7 @@ function simulate(h1, feats, startIdx, P, spec) {
 
     // (b) consider a new entry (fills at this close, managed from next candle)
     if (open.length >= P.MAX_CONCURRENT_TRADES) continue;   // matches live early-return
-    const regime = detectRegime(f.adx, P, state);
+    const regime = detectRegime(f.adx, f.er, P, state);
     const sig = regime === 'TREND' ? evaluateTrend(f, P, spec) : evaluateRange(f, P, spec);
     if (!sig.shouldEnter) continue;
 

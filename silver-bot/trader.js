@@ -64,6 +64,14 @@ const MAX_CONCURRENT_TRADES = 6;   // demo — run more concurrently to gather a
 const ADX_TREND_MIN = 18;
 const ADX_RANGE_MAX = 14;
 
+// Trend-QUALITY filter (Kaufman efficiency ratio). ADX alone can't tell a real
+// trend from volatile chop: silver ran ADX 32–49 all day on 06-Aug while price
+// went nowhere (61.98→61.43→61.55), and the bot bled buying pullbacks into it.
+// ER = net move ÷ total path over the window: ~1 = clean directional trend, ~0 =
+// chop. We only call TREND when ADX is high AND the move is genuinely directional.
+const ER_LOOKBACK  = 20;
+const ER_TREND_MIN = 0.30;   // below this a high-ADX market is chop, not a trend — don't trend-follow it
+
 // Stops / targets, expressed in ATR and R multiples.
 const ATR_SL_MULT_TREND = 1.0;   // tightened 1.2 -> 1.0 — faster resolution
 const ATR_SL_MULT_RANGE = 1.0;
@@ -144,16 +152,33 @@ function calcADX(candles, period = 14) {
   return adx;
 }
 
+// Kaufman efficiency ratio over H1 closes: |net move| ÷ total path length.
+// ~1 = a clean one-way trend; ~0 = lots of movement but no net progress (chop).
+function calcER(candles, period = ER_LOOKBACK) {
+  if (candles.length < period + 1) return 0;
+  const c = candles.map(x => x.close);
+  const n = c.length;
+  const net = Math.abs(c[n - 1] - c[n - 1 - period]);
+  let path = 0;
+  for (let i = n - period; i < n; i++) path += Math.abs(c[i] - c[i - 1]);
+  return path === 0 ? 0 : net / path;
+}
+
 // ─── REGIME DETECTION ─────────────────────────────────────────────────────────
 
 function detectRegime(candles1h) {
   const adx = calcADX(candles1h, 14);
+  const er  = calcER(candles1h, ER_LOOKBACK);
   let regime;
-  if (adx >= ADX_TREND_MIN)      regime = 'TREND';
-  else if (adx <= ADX_RANGE_MAX) regime = 'RANGE';
-  else                           regime = lastRegime;   // hysteresis — carry previous
+  if (adx >= ADX_TREND_MIN && er >= ER_TREND_MIN) {
+    regime = 'TREND';                              // strong AND genuinely directional
+  } else if (adx <= ADX_RANGE_MAX || er < ER_TREND_MIN) {
+    regime = 'RANGE';                              // weak trend, OR high-ADX chop (no net progress)
+  } else {
+    regime = lastRegime;                           // in-between: carry previous (hysteresis)
+  }
   lastRegime = regime;
-  return { regime, adx };
+  return { regime, adx, er };
 }
 
 // ─── ENTRY: TREND SLEEVE ──────────────────────────────────────────────────────
@@ -348,14 +373,14 @@ async function runTradingCycle() {
     }
 
     // Pick the sleeve by regime, then evaluate it
-    const { regime, adx } = detectRegime(candles1h);
+    const { regime, adx, er } = detectRegime(candles1h);
     const signal = regime === 'TREND'
       ? evaluateTrend(candles1h, candles4h, currentPrice, adx)
       : evaluateRange(candles1h, currentPrice, adx);
 
-    console.log(`Regime: ${regime} (ADX ${adx.toFixed(1)}) | ${signal.shouldEnter ? `${signal.action} ${signal.mode}/${signal.entryMethod} grade ${signal.grade}` : 'HOLD'} | ${signal.reasoning}`);
+    console.log(`Regime: ${regime} (ADX ${adx.toFixed(1)}, ER ${er.toFixed(2)}) | ${signal.shouldEnter ? `${signal.action} ${signal.mode}/${signal.entryMethod} grade ${signal.grade}` : 'HOLD'} | ${signal.reasoning}`);
 
-    if (!signal.shouldEnter) { writeLog({ type: 'HOLD', regime, adx: +adx.toFixed(1), reasoning: signal.reasoning }); return; }
+    if (!signal.shouldEnter) { writeLog({ type: 'HOLD', regime, adx: +adx.toFixed(1), er: +er.toFixed(2), reasoning: signal.reasoning }); return; }
 
     // Opposing-position guard (OANDA netting)
     const opposing = openPositions.find(p =>
@@ -618,5 +643,5 @@ module.exports = {
   runOvernightManagement,
   runBedtimeProtection,
   // exposed for offline unit tests only
-  _internals: { calcATR, calcADX, detectRegime, evaluateTrend, evaluateRange }
+  _internals: { calcATR, calcADX, calcER, detectRegime, evaluateTrend, evaluateRange }
 };
