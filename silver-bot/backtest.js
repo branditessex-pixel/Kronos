@@ -82,10 +82,13 @@ const DATA_DIR = path.join(__dirname, 'backtest-data');
 // spreadPips = typical OANDA spread expressed in this instrument's pips. Silver's
 // pip is 100× cheaper than gold's, so its raw spread is a much bigger pip-count
 // and a real drag — modelling it stops the sweep from flattering silver.
+// entryTF / biasTF mirror the live per-instrument timeframes (silver runs the
+// faster M15/H1 pairing; gold the H1/H4 pairing). Override silver via env to sweep
+// other timeframes (ENTRY_TF / BIAS_TF).
 const SPECS = {
-  XAU_USD:  { pipSize: 0.10,  pipValuePerLot: 10,   label: 'XAU/USD', name: 'Gold',   spreadPips: 3  },
-  XAG_USD:  { pipSize: 0.001, pipValuePerLot: 0.10, label: 'XAG/USD', name: 'Silver', spreadPips: 25 },
-  US30_USD: { pipSize: 1.0,   pipValuePerLot: 100,  label: 'US30',    name: 'US30',   spreadPips: 3  }
+  XAU_USD:  { pipSize: 0.10,  pipValuePerLot: 10,   label: 'XAU/USD', name: 'Gold',   spreadPips: 3,  entryTF: 'H1',  biasTF: 'H4' },
+  XAG_USD:  { pipSize: 0.001, pipValuePerLot: 0.10, label: 'XAG/USD', name: 'Silver', spreadPips: 25, entryTF: (process.env.ENTRY_TF || 'M15').toUpperCase(), biasTF: (process.env.BIAS_TF || 'H1').toUpperCase() },
+  US30_USD: { pipSize: 1.0,   pipValuePerLot: 100,  label: 'US30',    name: 'US30',   spreadPips: 3,  entryTF: 'H1',  biasTF: 'H4' }
 };
 
 // ─── STRATEGY TUNABLES (mirror trader.js) ─────────────────────────────────────
@@ -102,20 +105,21 @@ const STRAT = {
   RSI_HARD_BLOCK_LO: 15,
   RANGE_RSI_HI: 60,
   RANGE_RSI_LO: 40,
-  // ── fixed ──
+  // ── fixed ── (timeframe-portable: distances scale with ATR / the stop)
   ATR_SL_MULT_TREND: 1.0,
   ATR_SL_MULT_RANGE: 1.0,
-  MIN_SL_PIPS: 120,
-  MAX_SL_PIPS: 300,
+  MIN_SL_PIPS: 40,          // absolute floor
+  MAX_SL_PIPS: 300,         // absolute cap
+  MIN_SL_SPREAD_MULT: 5,    // SL >= 5× spread → spread ≤20% of risk (fast-TF silver)
   TREND_TP_R: 3.0,
   RANGE_TP_R: 2.0,
   SCALEOUT_R_TREND: 1.0,
   SCALEOUT_R_RANGE: 1.0,
-  TRAIL_PIPS: 80,
-  BREAKEVEN_BUFFER_PIPS: 15,
+  TRAIL_SL_FRAC: 0.32,      // trail = fraction of the (ATR-based) stop
+  BE_BUFFER_FRAC: 0.06,     // breakeven buffer = fraction of the stop
   MAX_TRADE_HOURS: 6,
-  H4_NEUTRAL_PIPS: 30,
-  PULLBACK_ZONE_PIPS: 130,
+  BIAS_NEUTRAL_ATR: 0.15,   // bias dead-band = × ATR
+  PULLBACK_ZONE_ATR: 0.65,  // pullback zone = × ATR
   BREAKOUT_MAX_CANDLES: 3,
   CONTINUATION_ADX_MIN: 25,
   RANGE_LOOKBACK: 20,
@@ -158,21 +162,26 @@ async function fetchCandles(instrument, granularity, want) {
 }
 
 async function fetchAndCache(instrument) {
-  if (!SPECS[instrument]) throw new Error(`Unknown instrument ${instrument}`);
+  const spec = SPECS[instrument];
+  if (!spec) throw new Error(`Unknown instrument ${instrument}`);
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-  console.log(`Fetching ${instrument} history from OANDA (${BASE})…`);
-  const h1 = await fetchCandles(instrument, 'H1', 6000);   // ~8 months of H1
-  const h4 = await fetchCandles(instrument, 'H4', 1500);   // comfortably covers it
-  fs.writeFileSync(path.join(DATA_DIR, `${instrument}-H1.json`), JSON.stringify(h1));
-  fs.writeFileSync(path.join(DATA_DIR, `${instrument}-H4.json`), JSON.stringify(h4));
+  // More bars on a faster entry TF so the span stays comparable (M15 = 4× H1).
+  const entryWant = spec.entryTF.startsWith('M') ? 12000 : 6000;
+  console.log(`Fetching ${instrument} history from OANDA (${BASE}) — ${spec.entryTF} entry / ${spec.biasTF} bias…`);
+  const h1 = await fetchCandles(instrument, spec.entryTF, entryWant);   // entry-TF candles
+  const h4 = await fetchCandles(instrument, spec.biasTF, 2000);         // bias-TF candles
+  fs.writeFileSync(path.join(DATA_DIR, `${instrument}-${spec.entryTF}.json`), JSON.stringify(h1));
+  fs.writeFileSync(path.join(DATA_DIR, `${instrument}-${spec.biasTF}.json`), JSON.stringify(h4));
   const span = (new Date(h1[h1.length - 1].time) - new Date(h1[0].time)) / 86400000;
-  console.log(`Cached ${h1.length} H1 + ${h4.length} H4 candles — ${span.toFixed(0)} days (${h1[0].time.slice(0, 10)} → ${h1[h1.length - 1].time.slice(0, 10)})`);
+  console.log(`Cached ${h1.length} ${spec.entryTF} + ${h4.length} ${spec.biasTF} candles — ${span.toFixed(0)} days (${h1[0].time.slice(0, 10)} → ${h1[h1.length - 1].time.slice(0, 10)})`);
   return { h1, h4 };
 }
 
 function loadCached(instrument) {
-  const p1 = path.join(DATA_DIR, `${instrument}-H1.json`);
-  const p4 = path.join(DATA_DIR, `${instrument}-H4.json`);
+  const spec = SPECS[instrument];
+  if (!spec) return null;
+  const p1 = path.join(DATA_DIR, `${instrument}-${spec.entryTF}.json`);
+  const p4 = path.join(DATA_DIR, `${instrument}-${spec.biasTF}.json`);
   if (!fs.existsSync(p1) || !fs.existsSync(p4)) return null;
   return { h1: JSON.parse(fs.readFileSync(p1)), h4: JSON.parse(fs.readFileSync(p4)) };
 }
@@ -252,6 +261,9 @@ function precomputeFeatures(h1, h4, spec) {
 
 const hold = (r) => ({ shouldEnter: false, reasoning: r });
 const clampSl = (p, P) => Math.max(P.MIN_SL_PIPS, Math.min(P.MAX_SL_PIPS, p));
+// Stop must be >= MIN_SL_SPREAD_MULT× the spread, then clamped (fast-TF silver safety).
+const clampSlWithSpread = (p, spreadPips, P) =>
+  clampSl(Math.max(p, Math.ceil((spreadPips || 0) * P.MIN_SL_SPREAD_MULT)), P);
 
 function detectRegime(adx, er, P, state) {
   let regime;
@@ -264,11 +276,11 @@ function detectRegime(adx, er, P, state) {
 
 function evaluateTrend(f, P, spec) {
   const pip = spec.pipSize;
-  if (f.h4Ema50 == null) return hold('Insufficient H4 data');
+  if (f.h4Ema50 == null) return hold('Insufficient bias-TF data');
   const price = f.price;
-  const bullish = price > f.h4Ema50 + P.H4_NEUTRAL_PIPS * pip;
-  const bearish = price < f.h4Ema50 - P.H4_NEUTRAL_PIPS * pip;
-  if (!bullish && !bearish) return hold('H4 neutral band');
+  const bullish = price > f.h4Ema50 + P.BIAS_NEUTRAL_ATR * f.atr;
+  const bearish = price < f.h4Ema50 - P.BIAS_NEUTRAL_ATR * f.atr;
+  if (!bullish && !bearish) return hold('bias neutral band');
   const bias = bullish ? 'BUY' : 'SELL';
 
   const macdFavours = bias === 'BUY' ? f.macdHist > 0 : f.macdHist < 0;
@@ -278,7 +290,7 @@ function evaluateTrend(f, P, spec) {
   const onTrendSide = bias === 'BUY' ? price >= f.h1Ema20 : price <= f.h1Ema20;
 
   let entryMode, grade;
-  if (distPips <= P.PULLBACK_ZONE_PIPS) {
+  if (distPips <= P.PULLBACK_ZONE_ATR * f.atrPips) {
     entryMode = 'PULLBACK';
     if (!macdTurning) return hold('pullback, MACD not turning');
     grade = macdFavours ? 'A' : 'B';
@@ -306,7 +318,7 @@ function evaluateTrend(f, P, spec) {
   if (bias === 'BUY' && f.rsi > P.RSI_HARD_BLOCK_HI) return hold(`BUY blocked RSI ${f.rsi.toFixed(0)}`);
   if (bias === 'SELL' && f.rsi < P.RSI_HARD_BLOCK_LO) return hold(`SELL blocked RSI ${f.rsi.toFixed(0)}`);
 
-  const slPips = clampSl(Math.round(f.atrPips * P.ATR_SL_MULT_TREND), P);
+  const slPips = clampSlWithSpread(Math.round(f.atrPips * P.ATR_SL_MULT_TREND), spec.spreadPips, P);
   return buildEntry('TREND', bias, entryMode, grade, f, slPips, P.TREND_TP_R, spec);
 }
 
@@ -318,7 +330,7 @@ function evaluateRange(f, P, spec) {
   if (f.posInRange >= 1 - P.RANGE_EDGE_PCT && f.rsi >= P.RANGE_RSI_HI) {
     const rejecting = last.close < last.open || (last.high - Math.max(last.open, last.close)) > (last.high - last.low) * 0.4;
     if (rejecting) {
-      const slPips = clampSl(Math.round(((f.rangeHigh - price) / pip) + f.atrPips * P.ATR_SL_MULT_RANGE), P);
+      const slPips = clampSlWithSpread(Math.round(((f.rangeHigh - price) / pip) + f.atrPips * P.ATR_SL_MULT_RANGE), spec.spreadPips, P);
       const grade = f.rsi >= 68 ? 'A' : 'B';
       return buildEntry('RANGE', 'SELL', 'RANGE_FADE', grade, f, slPips, P.RANGE_TP_R, spec);
     }
@@ -326,7 +338,7 @@ function evaluateRange(f, P, spec) {
   if (f.posInRange <= P.RANGE_EDGE_PCT && f.rsi <= P.RANGE_RSI_LO) {
     const rejecting = last.close > last.open || (Math.min(last.open, last.close) - last.low) > (last.high - last.low) * 0.4;
     if (rejecting) {
-      const slPips = clampSl(Math.round(((price - f.rangeLow) / pip) + f.atrPips * P.ATR_SL_MULT_RANGE), P);
+      const slPips = clampSlWithSpread(Math.round(((price - f.rangeLow) / pip) + f.atrPips * P.ATR_SL_MULT_RANGE), spec.spreadPips, P);
       const grade = f.rsi <= 32 ? 'A' : 'B';
       return buildEntry('RANGE', 'BUY', 'RANGE_FADE', grade, f, slPips, P.RANGE_TP_R, spec);
     }
@@ -388,10 +400,10 @@ function simulate(h1, feats, startIdx, P, spec) {
     if (!t.scaled && rAt(c.close) >= t.scaleR) {
       t.realizedR += 0.5 * rAt(c.close);   // bank half at close
       t.frac = 0.5; t.scaled = true;
-      t.currentSL = t.entry + P.BREAKEVEN_BUFFER_PIPS * pip * dir;
+      t.currentSL = t.entry + (P.BE_BUFFER_FRAC * t.slPips) * pip * dir;
     } else if (t.scaled) {
-      // 5) trail the runner (ratchet only)
-      const trail = c.close - P.TRAIL_PIPS * pip * dir;
+      // 5) trail the runner (ratchet only) — trail distance = fraction of the stop
+      const trail = c.close - (P.TRAIL_SL_FRAC * t.slPips) * pip * dir;
       if (dir > 0 ? trail > t.currentSL : trail < t.currentSL) t.currentSL = trail;
     }
     return false;
