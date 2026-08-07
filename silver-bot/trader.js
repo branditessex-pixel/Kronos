@@ -35,7 +35,8 @@
 const axios = require('axios');
 const {
   BASE, TOKEN, ACCOUNT, isLive,
-  INSTRUMENT, PIP_SIZE, PIP_VALUE_PER_LOT, INSTRUMENT_LABEL, INSTRUMENT_NAME, BOT_NAME
+  INSTRUMENT, PIP_SIZE, PIP_VALUE_PER_LOT, INSTRUMENT_LABEL, INSTRUMENT_NAME, BOT_NAME,
+  ENTRY_TF, BIAS_TF, ENTRY_TF_MIN
 } = require('./config');
 const { getCandles, getCandles15m, getCandles4h, getAccountInfo, getOpenPositions, getCurrentPrice } = require('./market');
 const { writeLog } = require('./log');
@@ -72,25 +73,30 @@ const ADX_RANGE_MAX = 14;
 const ER_LOOKBACK  = 20;
 const ER_TREND_MIN = 0.30;   // below this a high-ADX market is chop, not a trend — don't trend-follow it
 
-// Stops / targets, expressed in ATR and R multiples.
-const ATR_SL_MULT_TREND = 1.0;   // tightened 1.2 -> 1.0 — faster resolution
+// Stops / targets. SL is ATR-based, so it auto-scales when the timeframe changes.
+// A spread floor keeps the stop sensible relative to silver's wide spread on fast
+// timeframes (spread must be a small fraction of the risk, or it eats the edge).
+const ATR_SL_MULT_TREND = 1.0;
 const ATR_SL_MULT_RANGE = 1.0;
-const MIN_SL_PIPS       = 120;   // never tighter — gold H1 noise
-const MAX_SL_PIPS       = 300;   // cap tightened 450 -> 300
+const MIN_SL_PIPS       = 40;    // absolute floor (any TF)
+const MAX_SL_PIPS       = 300;   // absolute cap (won't bind on fast TFs)
+const MIN_SL_SPREAD_MULT = 5;    // SL must be >= 5× the current spread → spread ≤20% of risk (protects fast-TF silver)
 const TREND_TP_R        = 3.0;   // final take-profit = 3× risk
 const RANGE_TP_R        = 2.0;
 
-// Position management
-const SCALEOUT_R_TREND  = 1.0;   // bank half + move to breakeven + start trailing at 1.0R (was 1.5) — locks in sooner, stops giving back
+// Position management. Distances are expressed as FRACTIONS OF THE STOP (which is
+// ATR-based), so they scale with the timeframe automatically — no per-TF tuning.
+const SCALEOUT_R_TREND  = 1.0;   // bank half + move to breakeven + start trailing at 1.0R
 const SCALEOUT_R_RANGE  = 1.0;
-const TRAIL_PIPS        = 80;    // runner trails this far behind price once scaled out (tightened 100 -> 80)
-const BREAKEVEN_BUFFER_PIPS = 15;
-const MAX_TRADE_HOURS   = 6;     // time stop — cut a trade that hasn't reached breakeven within this, to free the book
+const TRAIL_SL_FRAC     = 0.32;  // runner trails this fraction of the stop distance behind price (~80p on a 250p H1 stop)
+const BE_BUFFER_FRAC    = 0.06;  // breakeven lock = this fraction of the stop beyond entry (~15p on a 250p stop)
+const MAX_TRADE_HOURS   = 6;     // wall-clock time stop — cut a trade that never reached breakeven, to free the book
 
-// TREND sleeve tuning — deliberately loose (one confirmation, not seven gates)
-const H4_NEUTRAL_PIPS      = 30;    // dead band around H4 EMA50
-const PULLBACK_ZONE_PIPS   = 130;   // how far from H1 EMA20 still counts as a pullback
-const BREAKOUT_MAX_CANDLES = 3;     // "fresh" breakout = ≤3 H1 closes beyond EMA20
+// TREND sleeve tuning — deliberately loose (one confirmation, not seven gates).
+// Distances are ATR multiples so they scale with the timeframe automatically.
+const BIAS_NEUTRAL_ATR     = 0.15;  // dead band around the bias EMA, as a multiple of entry-TF ATR
+const PULLBACK_ZONE_ATR    = 0.65;  // how far from the entry EMA20 still counts as a pullback (× ATR)
+const BREAKOUT_MAX_CANDLES = 3;     // "fresh" breakout = ≤3 entry-TF closes beyond EMA20
 const CONTINUATION_ADX_MIN = 25;    // in a GENUINE strong trend (ADX≥this), join an already-run move on a pullback candle instead of sitting out. Fixes the "BUY breakout stale ×235" lockout where silver watched a 49-ADX rip go by and never boarded.
 const RSI_HARD_BLOCK_HI    = 85;    // block BUY only at genuine exhaustion (was 78 — silver trends ran RSI 78–83 and got vetoed OUT of with-trend buys)
 const RSI_HARD_BLOCK_LO    = 15;    // block SELL only at genuine exhaustion (was 22)
@@ -188,13 +194,17 @@ function evaluateTrend(candles1h, candles4h, currentPrice, adx) {
   const closes1h = candles1h.map(c => c.close);
   const price    = currentPrice.mid;
 
-  if (closes4h.length < 50) return hold('Insufficient H4 data');
+  if (closes4h.length < 50) return hold('Insufficient bias-TF data');
 
-  // H4 trend bias with a dead band
+  const atr        = calcATR(candles1h, 14);
+  const atrPips    = atr / PIP_SIZE;
+  const spreadPips = (currentPrice.ask - currentPrice.bid) / PIP_SIZE;
+
+  // Higher-timeframe trend bias with an ATR-scaled dead band
   const h4Ema50 = calculateEMA(closes4h, 50);
-  const bullish = price > h4Ema50 + H4_NEUTRAL_PIPS * PIP_SIZE;
-  const bearish = price < h4Ema50 - H4_NEUTRAL_PIPS * PIP_SIZE;
-  if (!bullish && !bearish) return hold(`Price in H4 EMA50 neutral band (${h4Ema50.toFixed(2)})`);
+  const bullish = price > h4Ema50 + BIAS_NEUTRAL_ATR * atr;
+  const bearish = price < h4Ema50 - BIAS_NEUTRAL_ATR * atr;
+  if (!bullish && !bearish) return hold(`Price in ${BIAS_TF} EMA50 neutral band (${h4Ema50.toFixed(2)})`);
   const bias = bullish ? 'BUY' : 'SELL';
 
   const h1Ema20 = calculateEMA(closes1h, 20);
@@ -215,7 +225,7 @@ function evaluateTrend(candles1h, candles4h, currentPrice, adx) {
   const onTrendSide = bias === 'BUY' ? price >= h1Ema20 : price <= h1Ema20;
 
   let entryMode, grade;
-  if (distPips <= PULLBACK_ZONE_PIPS) {
+  if (distPips <= PULLBACK_ZONE_ATR * atrPips) {
     entryMode = 'PULLBACK';
     // Pullback: momentum must be re-aligning with the trend (turning), not already extended.
     if (!macdTurning) return hold(`${bias} pullback but MACD not turning back yet (hist ${macd.histogram.toFixed(2)} vs prev ${macd.prevHistogram.toFixed(2)})`);
@@ -257,18 +267,17 @@ function evaluateTrend(candles1h, candles4h, currentPrice, adx) {
   if (bias === 'BUY'  && rsi > RSI_HARD_BLOCK_HI) return hold(`BUY blocked — RSI ${rsi.toFixed(0)} overbought`);
   if (bias === 'SELL' && rsi < RSI_HARD_BLOCK_LO) return hold(`SELL blocked — RSI ${rsi.toFixed(0)} oversold`);
 
-  const atr = calcATR(candles1h, 14);
-  const slPips = clampSl(Math.round((atr / PIP_SIZE) * ATR_SL_MULT_TREND));
+  const slPips = clampSlWithSpread(Math.round(atrPips * ATR_SL_MULT_TREND), spreadPips);
   return buildEntry('TREND', bias, entryMode, grade, currentPrice, slPips, TREND_TP_R, adx,
-    `H4 ${bias} bias, ${entryMode.toLowerCase()} at H1 EMA20 (${h1Ema20.toFixed(2)}), MACD ${macd.histogram.toFixed(3)} (grade ${grade}), RSI ${rsi.toFixed(0)}, SL ${slPips}p (1.5×ATR)`,
-    { rsi, macdHist: macd.histogram, atrPips: atr / PIP_SIZE, distEma20Pips: (price - h1Ema20) / PIP_SIZE });
+    `${BIAS_TF} ${bias} bias, ${entryMode.toLowerCase()} at ${ENTRY_TF} EMA20 (${h1Ema20.toFixed(2)}), MACD ${macd.histogram.toFixed(3)} (grade ${grade}), RSI ${rsi.toFixed(0)}, SL ${slPips}p (ATR-based)`,
+    { rsi, macdHist: macd.histogram, atrPips, distEma20Pips: (price - h1Ema20) / PIP_SIZE });
 }
 
 // ─── ENTRY: RANGE SLEEVE ──────────────────────────────────────────────────────
 
 function evaluateRange(candles1h, currentPrice, adx) {
   const recent = candles1h.slice(-RANGE_LOOKBACK);
-  if (recent.length < RANGE_LOOKBACK) return hold('Insufficient H1 data for range');
+  if (recent.length < RANGE_LOOKBACK) return hold('Insufficient entry-TF data for range');
 
   const rangeHigh = Math.max(...recent.map(c => c.high));
   const rangeLow  = Math.min(...recent.map(c => c.low));
@@ -277,6 +286,7 @@ function evaluateRange(candles1h, currentPrice, adx) {
   if (atr <= 0 || width < RANGE_MIN_ATR * atr) return hold('Range too tight to fade');
 
   const price      = currentPrice.mid;
+  const spreadPips = (currentPrice.ask - currentPrice.bid) / PIP_SIZE;
   const posInRange = (price - rangeLow) / width;   // 0 = bottom, 1 = top
   const rsi        = calculateRSI(candles1h.map(c => c.close), 14);
   const last       = candles1h[candles1h.length - 2] || candles1h[candles1h.length - 1]; // last completed
@@ -285,7 +295,7 @@ function evaluateRange(candles1h, currentPrice, adx) {
   if (posInRange >= 1 - RANGE_EDGE_PCT && rsi >= RANGE_RSI_HI) {
     const rejecting = last.close < last.open || (last.high - Math.max(last.open, last.close)) > (last.high - last.low) * 0.4;
     if (rejecting) {
-      const slPips = clampSl(Math.round(((rangeHigh - price) / PIP_SIZE) + (atr / PIP_SIZE) * ATR_SL_MULT_RANGE));
+      const slPips = clampSlWithSpread(Math.round(((rangeHigh - price) / PIP_SIZE) + (atr / PIP_SIZE) * ATR_SL_MULT_RANGE), spreadPips);
       const grade  = rsi >= 68 ? 'A' : 'B';
       return buildEntry('RANGE', 'SELL', 'RANGE_FADE', grade, currentPrice, slPips, RANGE_TP_R, adx,
         `Fade top of range [${rangeLow.toFixed(2)}–${rangeHigh.toFixed(2)}], pos ${(posInRange*100).toFixed(0)}%, RSI ${rsi.toFixed(0)} (grade ${grade}), SL ${slPips}p`,
@@ -296,7 +306,7 @@ function evaluateRange(candles1h, currentPrice, adx) {
   if (posInRange <= RANGE_EDGE_PCT && rsi <= RANGE_RSI_LO) {
     const rejecting = last.close > last.open || (Math.min(last.open, last.close) - last.low) > (last.high - last.low) * 0.4;
     if (rejecting) {
-      const slPips = clampSl(Math.round(((price - rangeLow) / PIP_SIZE) + (atr / PIP_SIZE) * ATR_SL_MULT_RANGE));
+      const slPips = clampSlWithSpread(Math.round(((price - rangeLow) / PIP_SIZE) + (atr / PIP_SIZE) * ATR_SL_MULT_RANGE), spreadPips);
       const grade  = rsi <= 32 ? 'A' : 'B';
       return buildEntry('RANGE', 'BUY', 'RANGE_FADE', grade, currentPrice, slPips, RANGE_TP_R, adx,
         `Fade bottom of range [${rangeLow.toFixed(2)}–${rangeHigh.toFixed(2)}], pos ${(posInRange*100).toFixed(0)}%, RSI ${rsi.toFixed(0)} (grade ${grade}), SL ${slPips}p`,
@@ -310,6 +320,12 @@ function evaluateRange(candles1h, currentPrice, adx) {
 
 function hold(reason) { return { shouldEnter: false, reasoning: reason }; }
 function clampSl(p)   { return Math.max(MIN_SL_PIPS, Math.min(MAX_SL_PIPS, p)); }
+// Stop must be at least MIN_SL_SPREAD_MULT× the spread, so on a fast timeframe the
+// wide silver spread can't become a huge fraction of the risk. Then clamped.
+function clampSlWithSpread(atrBasedPips, spreadPips) {
+  const floor = Math.ceil((spreadPips || 0) * MIN_SL_SPREAD_MULT);
+  return clampSl(Math.max(atrBasedPips, floor));
+}
 
 function buildEntry(mode, action, entryMethod, grade, currentPrice, slPips, tpR, adx, reasoning, context = {}) {
   const entry = action === 'BUY' ? currentPrice.ask : currentPrice.bid;
@@ -348,8 +364,8 @@ async function runTradingCycle() {
     await checkClosedTrades();
 
     const [candles1h, candles4h, accountInfo, openPositions, currentPrice] = await Promise.all([
-      getCandles(INSTRUMENT, 'H1', 250),
-      getCandles4h(INSTRUMENT, 120),
+      getCandles(INSTRUMENT, ENTRY_TF, 250),   // entry/regime timeframe (default M15)
+      getCandles(INSTRUMENT, BIAS_TF, 120),    // higher-timeframe bias (default H1)
       getAccountInfo(),
       getOpenPositions(),
       getCurrentPrice(INSTRUMENT)
@@ -503,6 +519,10 @@ async function manageOpenPosition(pos, currentPrice) {
     const slPips = rec?.slPips || MIN_SL_PIPS;
     const mode   = rec?.mode || 'TREND';
     const scaleR = mode === 'RANGE' ? SCALEOUT_R_RANGE : SCALEOUT_R_TREND;
+    // Management distances scale with THIS trade's (ATR-based) stop, so they're
+    // right on any timeframe with no per-TF tuning.
+    const beBufferPips = Math.max(1, Math.round(BE_BUFFER_FRAC * slPips));
+    const trailPips    = Math.max(1, Math.round(TRAIL_SL_FRAC * slPips));
 
     const mid = currentPrice.mid;
     const pipsProfit = pos.type === 'BUY'
@@ -538,8 +558,8 @@ async function manageOpenPosition(pos, currentPrice) {
         console.log(`Trade ${pos.id} — scaled out ${half} units at ${rNow.toFixed(2)}R`);
       }
       const bePrice = pos.type === 'BUY'
-        ? px(pos.openPrice + BREAKEVEN_BUFFER_PIPS * PIP_SIZE)
-        : px(pos.openPrice - BREAKEVEN_BUFFER_PIPS * PIP_SIZE);
+        ? px(pos.openPrice + beBufferPips * PIP_SIZE)
+        : px(pos.openPrice - beBufferPips * PIP_SIZE);
       await moveStop(pos.id, bePrice);
       writeLog({ type: 'SCALE_OUT', tradeId: pos.id, rAtScale: +rNow.toFixed(2), breakeven: bePrice });
       return;
@@ -552,8 +572,8 @@ async function manageOpenPosition(pos, currentPrice) {
     // move the SL below the breakeven lock, even if TRAIL_PIPS exceeds the profit.
     if (atBreakeven) {
       const trailPrice = pos.type === 'BUY'
-        ? px(mid - TRAIL_PIPS * PIP_SIZE)
-        : px(mid + TRAIL_PIPS * PIP_SIZE);
+        ? px(mid - trailPips * PIP_SIZE)
+        : px(mid + trailPips * PIP_SIZE);
       const improves = pos.type === 'BUY' ? trailPrice > pos.stopLoss : trailPrice < pos.stopLoss;
       if (improves) {
         await moveStop(pos.id, trailPrice);

@@ -79,6 +79,17 @@ const INSTRUMENT_LABEL  = SPEC.label;
 const INSTRUMENT_NAME   = SPEC.name;
 const BOT_NAME          = `${SPEC.name} Demo`;
 
+// ─── TIMEFRAME ────────────────────────────────────────────────────────────────
+// The strategy is timeframe-portable: ENTRY_TF drives entries/regime, BIAS_TF the
+// higher-timeframe trend bias. Silver defaults to the faster M15/H1 pairing (the
+// hypothesis is silver's moves are quicker than the H1/H4 gold pairing can catch);
+// override via env to experiment. All distance-based tunables in trader.js scale
+// with ATR / the stop, so changing the timeframe rescales them automatically.
+const ENTRY_TF = (process.env.ENTRY_TF || 'M15').trim().toUpperCase();
+const BIAS_TF  = (process.env.BIAS_TF  || 'H1').trim().toUpperCase();
+const TF_MINUTES = { M1: 1, M2: 2, M5: 5, M10: 10, M15: 15, M30: 30, H1: 60, H2: 120, H4: 240 };
+const ENTRY_TF_MIN = TF_MINUTES[ENTRY_TF] || 15;
+
 // ─── STARTUP VALIDATION ───────────────────────────────────────────────────────
 
 if (isLive) {
@@ -100,7 +111,10 @@ console.log(`[CONFIG] Base URL: ${BASE}`);
 console.log(`[CONFIG] Token   : ${tokenPreview}`);
 console.log(`[CONFIG] ─────────────────────────────────────────────`);
 
+console.log(`[CONFIG] Timeframe: ${ENTRY_TF} entries / ${BIAS_TF} bias`);
+
 module.exports = {
   BASE, TOKEN, ACCOUNT, TRADING_MODE, isLive,
-  INSTRUMENT, PIP_SIZE, PIP_VALUE_PER_LOT, MAX_LOT, INSTRUMENT_LABEL, INSTRUMENT_NAME, BOT_NAME
+  INSTRUMENT, PIP_SIZE, PIP_VALUE_PER_LOT, MAX_LOT, INSTRUMENT_LABEL, INSTRUMENT_NAME, BOT_NAME,
+  ENTRY_TF, BIAS_TF, ENTRY_TF_MIN
 };
