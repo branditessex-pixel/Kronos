@@ -54,24 +54,19 @@ const px = (n) => parseFloat(Number(n).toFixed(PRICE_DECIMALS));
 
 // ─── STRATEGY CONSTANTS (gold H1) ─────────────────────────────────────────────
 
-const MAX_CONCURRENT_TRADES = 6;   // demo — run more concurrently to gather a bigger sample to monitor
+const MAX_CONCURRENT_TRADES = 2;   // gold-model value (replicating the live gold bot exactly on US30)
 
-// Regime thresholds (ADX-14 on H1) with a hysteresis gap so we don't flip-flop.
-// SILVER-CALIBRATED (was gold's 22/18). Silver's first live day faded a genuine
-// uptrend: ADX ran ~19–20 there, which gold's 22 cutoff labelled as RANGE, so the
-// bot sold into strength. Lowering the trend cutoff to 18 makes an ADX ~19 move
-// trade WITH the trend; dropping the range cutoff to 14 means we only fade when
-// the market is genuinely flat/choppy, not when a trend is merely modest.
-const ADX_TREND_MIN = 18;
-const ADX_RANGE_MAX = 14;
+// Regime thresholds (ADX-14 on entry TF) with a hysteresis gap so we don't
+// flip-flop. GOLD-MODEL VALUES (22/18) — this bot now replicates the live gold
+// strategy exactly on US30, so its edge is comparable like-for-like.
+const ADX_TREND_MIN = 22;
+const ADX_RANGE_MAX = 18;
 
-// Trend-QUALITY filter (Kaufman efficiency ratio). ADX alone can't tell a real
-// trend from volatile chop: silver ran ADX 32–49 all day on 06-Aug while price
-// went nowhere (61.98→61.43→61.55), and the bot bled buying pullbacks into it.
-// ER = net move ÷ total path over the window: ~1 = clean directional trend, ~0 =
-// chop. We only call TREND when ADX is high AND the move is genuinely directional.
+// ER constants retained for the calcER helper (exported for tests) but the regime
+// gate itself is DISABLED to match the gold model, which is ADX-only (the ER
+// trend-quality gate was a silver-only addition; gold reverted it — commit d48e000).
 const ER_LOOKBACK  = 20;
-const ER_TREND_MIN = 0.30;   // below this a high-ADX market is chop, not a trend — don't trend-follow it
+const ER_TREND_MIN = 0.30;
 
 // Stops / targets. SL is ATR-based, so it auto-scales when the timeframe changes.
 // A spread floor keeps the stop sensible relative to silver's wide spread on fast
@@ -97,9 +92,8 @@ const MAX_TRADE_HOURS   = 6;     // wall-clock time stop — cut a trade that ne
 const BIAS_NEUTRAL_ATR     = 0.15;  // dead band around the bias EMA, as a multiple of entry-TF ATR
 const PULLBACK_ZONE_ATR    = 0.65;  // how far from the entry EMA20 still counts as a pullback (× ATR)
 const BREAKOUT_MAX_CANDLES = 3;     // "fresh" breakout = ≤3 entry-TF closes beyond EMA20
-const CONTINUATION_ADX_MIN = 25;    // in a GENUINE strong trend (ADX≥this), join an already-run move on a pullback candle instead of sitting out. Fixes the "BUY breakout stale ×235" lockout where silver watched a 49-ADX rip go by and never boarded.
-const RSI_HARD_BLOCK_HI    = 85;    // block BUY only at genuine exhaustion (was 78 — silver trends ran RSI 78–83 and got vetoed OUT of with-trend buys)
-const RSI_HARD_BLOCK_LO    = 15;    // block SELL only at genuine exhaustion (was 22)
+const RSI_HARD_BLOCK_HI    = 78;    // gold-model value — block BUY only when truly overbought
+const RSI_HARD_BLOCK_LO    = 22;    // gold-model value — block SELL only when truly oversold
 
 // RANGE sleeve tuning
 const RANGE_LOOKBACK   = 20;   // H1 candles defining the range
@@ -173,18 +167,14 @@ function calcER(candles, period = ER_LOOKBACK) {
 // ─── REGIME DETECTION ─────────────────────────────────────────────────────────
 
 function detectRegime(candles1h) {
+  // ADX-only, matching the gold model exactly (no ER trend-quality gate).
   const adx = calcADX(candles1h, 14);
-  const er  = calcER(candles1h, ER_LOOKBACK);
   let regime;
-  if (adx >= ADX_TREND_MIN && er >= ER_TREND_MIN) {
-    regime = 'TREND';                              // strong AND genuinely directional
-  } else if (adx <= ADX_RANGE_MAX || er < ER_TREND_MIN) {
-    regime = 'RANGE';                              // weak trend, OR high-ADX chop (no net progress)
-  } else {
-    regime = lastRegime;                           // in-between: carry previous (hysteresis)
-  }
+  if (adx >= ADX_TREND_MIN)      regime = 'TREND';
+  else if (adx <= ADX_RANGE_MAX) regime = 'RANGE';
+  else                           regime = lastRegime;   // in-between: carry previous (hysteresis)
   lastRegime = regime;
-  return { regime, adx, er };
+  return { regime, adx };
 }
 
 // ─── ENTRY: TREND SLEEVE ──────────────────────────────────────────────────────
@@ -237,28 +227,11 @@ function evaluateTrend(candles1h, candles4h, currentPrice, adx) {
       const isBeyond = bias === 'BUY' ? closes1h[i] > h1Ema20 : closes1h[i] < h1Ema20;
       if (isBeyond) beyond++; else break;
     }
-    if (beyond <= BREAKOUT_MAX_CANDLES) {
-      // Fresh breakout — momentum must already be on-side (the original path).
-      if (!macdFavours) return hold(`${bias} breakout but MACD histogram ${macd.histogram.toFixed(2)} against it`);
-      entryMode = 'BREAKOUT';
-      grade = macdTurning ? 'A' : 'B';   // A if still strengthening
-    } else if (adx >= CONTINUATION_ADX_MIN) {
-      // TREND CONTINUATION — the move has already run (stale breakout), but it's a
-      // GENUINE strong trend. Join it on a minor PULLBACK candle (last completed
-      // candle closed against the trend). Crucially this does NOT require a positive
-      // MACD histogram: a pullback in a grinding trend has waning/negative momentum
-      // by definition — silver rose 60.5→62 at ADX ~49 with the histogram slightly
-      // negative the whole way, and that vetoed every with-trend buy. Here the
-      // confirmation is ADX≥25 + price on the trend side + a pullback candle + the
-      // RSI exhaustion cap below, not the lagging oscillator.
-      const last = candles1h[candles1h.length - 2] || candles1h[candles1h.length - 1];
-      const pulledBack = bias === 'BUY' ? last.close < last.open : last.close > last.open;
-      if (!pulledBack) return hold(`${bias} strong trend (ADX ${adx.toFixed(0)}) but waiting for a pullback candle to join on`);
-      entryMode = 'CONTINUATION';
-      grade = macdFavours ? 'A' : 'B';   // A if momentum is also on-side, else B
-    } else {
-      return hold(`${bias} breakout stale (${beyond} candles beyond EMA20), ADX ${adx.toFixed(0)} < ${CONTINUATION_ADX_MIN} — not a strong enough trend to chase`);
-    }
+    // Gold model: fresh breakout only (no continuation/chase). Stale → hold.
+    if (beyond > BREAKOUT_MAX_CANDLES) return hold(`${bias} breakout stale (${beyond} candles beyond EMA20)`);
+    if (!macdFavours) return hold(`${bias} breakout but MACD histogram ${macd.histogram.toFixed(2)} against it`);
+    entryMode = 'BREAKOUT';
+    grade = macdTurning ? 'A' : 'B';   // A if still strengthening
   } else {
     return hold(`${bias} bias but price ${distPips.toFixed(0)} pips on wrong side of H1 EMA20`);
   }
@@ -389,14 +362,14 @@ async function runTradingCycle() {
     }
 
     // Pick the sleeve by regime, then evaluate it
-    const { regime, adx, er } = detectRegime(candles1h);
+    const { regime, adx } = detectRegime(candles1h);
     const signal = regime === 'TREND'
       ? evaluateTrend(candles1h, candles4h, currentPrice, adx)
       : evaluateRange(candles1h, currentPrice, adx);
 
-    console.log(`Regime: ${regime} (ADX ${adx.toFixed(1)}, ER ${er.toFixed(2)}) | ${signal.shouldEnter ? `${signal.action} ${signal.mode}/${signal.entryMethod} grade ${signal.grade}` : 'HOLD'} | ${signal.reasoning}`);
+    console.log(`Regime: ${regime} (ADX ${adx.toFixed(1)}) | ${signal.shouldEnter ? `${signal.action} ${signal.mode}/${signal.entryMethod} grade ${signal.grade}` : 'HOLD'} | ${signal.reasoning}`);
 
-    if (!signal.shouldEnter) { writeLog({ type: 'HOLD', regime, adx: +adx.toFixed(1), er: +er.toFixed(2), reasoning: signal.reasoning }); return; }
+    if (!signal.shouldEnter) { writeLog({ type: 'HOLD', regime, adx: +adx.toFixed(1), reasoning: signal.reasoning }); return; }
 
     // Opposing-position guard (OANDA netting)
     const opposing = openPositions.find(p =>

@@ -56,7 +56,7 @@ const ACCOUNT = isLive
 // Gold by default. One place defines the instrument and its pip maths; every
 // other module imports these rather than hardcoding 'XAG_USD'/'XAU_USD'.
 
-const INSTRUMENT = (process.env.INSTRUMENT || 'XAG_USD').trim();  // silver bot — defaults to XAG/USD
+const INSTRUMENT = (process.env.INSTRUMENT || 'US30_USD').trim();  // demo research bot — repurposed to US30 (replicating the gold model on a cleaner-trending index)
 
 // Per-instrument pip maths. PIP_SIZE = price move that equals "1 pip".
 // PIP_VALUE_PER_LOT = USD P&L per pip per "lot", where 1 lot = 100 units.
@@ -85,8 +85,8 @@ const BOT_NAME          = `${SPEC.name} Demo`;
 // hypothesis is silver's moves are quicker than the H1/H4 gold pairing can catch);
 // override via env to experiment. All distance-based tunables in trader.js scale
 // with ATR / the stop, so changing the timeframe rescales them automatically.
-const ENTRY_TF = (process.env.ENTRY_TF || 'M15').trim().toUpperCase();
-const BIAS_TF  = (process.env.BIAS_TF  || 'H1').trim().toUpperCase();
+const ENTRY_TF = (process.env.ENTRY_TF || 'H1').trim().toUpperCase();  // gold-model pairing: H1 entries
+const BIAS_TF  = (process.env.BIAS_TF  || 'H4').trim().toUpperCase();  // gold-model pairing: H4 bias
 const TF_MINUTES = { M1: 1, M2: 2, M5: 5, M10: 10, M15: 15, M30: 30, H1: 60, H2: 120, H4: 240 };
 const ENTRY_TF_MIN = TF_MINUTES[ENTRY_TF] || 15;
 
