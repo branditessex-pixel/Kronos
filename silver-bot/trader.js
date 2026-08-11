@@ -574,23 +574,33 @@ async function checkClosedTrades() {
     if (closed.length === 0) return;
 
     const perf = readPerformance();
+    const openRecIds = perf.trades.filter(r => !r.closeTime).map(r => r.tradeId);
+    let booked = 0, skippedNoRec = 0, alreadyBooked = 0;
     for (const t of closed) {
       if (!t.closeTime) continue;
       const id  = t.id.toString();
       const rec = perf.trades.find(r => r.tradeId === id);
-      if (rec && rec.closeTime) continue;   // already booked
+      if (rec && rec.closeTime) { alreadyBooked++; continue; }   // already booked
       const pl        = parseFloat(t.realizedPL || 0);
       const exitPrice = parseFloat(t.averageClosePrice || t.price || 0);
       // ONLY book trades this bot actually opened (i.e. we have an open record).
       // Do NOT import trades we never opened — otherwise every reset re-grabs the
       // last 20 CLOSED trades from the OANDA account history and re-pollutes the
       // data with "unknown" trades that aren't ours.
-      if (!rec) continue;
+      if (!rec) {
+        skippedNoRec++;
+        console.warn(`[book] closed trade ${id} (£${pl.toFixed(2)}) has NO matching open record — skipping. This is why closes aren't booking. Open-record IDs: [${openRecIds.join(', ') || 'none'}]`);
+        continue;
+      }
       recordTradeClose(id, exitPrice, pl);
+      booked++;
       const emoji = pl >= 0 ? '✅' : '❌';
       await sendAlert(
         `${INSTRUMENT_NAME} trade ${id} closed | ${rec.direction} ${rec.mode || ''} | £${pl.toFixed(2)}`,
         { emoji, subject: `${emoji} ${BOT_NAME} — Trade Closed (£${pl.toFixed(2)})` });
+    }
+    if (closed.length) {
+      console.log(`[book] checkClosedTrades: ${closed.length} closed on OANDA | booked ${booked} | already-booked ${alreadyBooked} | skipped-no-open-record ${skippedNoRec}`);
     }
   } catch (err) {
     console.error('checkClosedTrades error:', err.message);
