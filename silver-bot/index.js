@@ -157,6 +157,17 @@ if (process.env.RESET_HALT === 'true') {
   } catch (err) { console.error('[RESET_HALT] Failed:', err.message); }
 }
 
+// On-demand report — set SEND_REPORT_NOW=true and redeploy to email a report
+// immediately (in addition to the 20:00 cron), then REMOVE the variable. Trading
+// continues as normal; this just fires one report shortly after boot.
+if (process.env.SEND_REPORT_NOW === 'true') {
+  setTimeout(() => {
+    sendDailyReport()
+      .then(() => console.log('[SEND_REPORT_NOW] ✅ On-demand report sent — REMOVE SEND_REPORT_NOW now.'))
+      .catch(e => console.error('[SEND_REPORT_NOW] failed:', e.message));
+  }, 15000);
+}
+
 writeLog({ type: 'STARTUP', message: `${BOT_NAME} starting — ${modeLabel}` });
 sendAlert(`${BOT_NAME} Bot started — ${modeLabel} | ${INSTRUMENT_LABEL} | market ${isMarketOpen() ? 'OPEN' : 'CLOSED'}`,
   { emoji: '🚀', subject: `🚀 ${BOT_NAME} — Bot Started (${modeLabel})` });
