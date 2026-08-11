@@ -2,6 +2,7 @@
 
 require('dotenv').config();
 const { Resend } = require('resend');
+const { BOT_NAME, INSTRUMENT_LABEL } = require('./config');   // e.g. "US30 Demo" / "US30" — no hardcoded instrument names
 
 // Construct lazily and defensively — a missing RESEND_API_KEY must NOT crash the
 // bot at import time (alerts are best-effort; trading must keep running).
@@ -36,7 +37,7 @@ const HEADER_COLOURS = {
 const EMAIL_EMOJI_ALLOWLIST = new Set(['🚀', '🔧']);
 
 async function sendAlert(message, { emoji = '⚠️', subject } = {}) {
-  const emailSubject = subject || `${emoji} Gold Demo`;
+  const emailSubject = subject || `${emoji} ${BOT_NAME}`;
   const headerColour = HEADER_COLOURS[emoji] || '#1a1a1a';
 
   if (!EMAIL_EMOJI_ALLOWLIST.has(emoji)) {
@@ -51,19 +52,19 @@ async function sendAlert(message, { emoji = '⚠️', subject } = {}) {
 
   try {
     await resend.emails.send({
-      from: 'Gold Demo <noreply@branditessex.com>',
+      from: `${BOT_NAME} <noreply@branditessex.com>`,
       to: process.env.ALERT_EMAIL,
       subject: emailSubject,
       html: `
         <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;">
           <div style="background:${headerColour};padding:20px;border-radius:8px 8px 0 0;">
             <h2 style="color:white;margin:0;">${emailSubject}</h2>
-            <p style="color:rgba(255,255,255,0.7);margin:4px 0 0;">XAU/USD — Gold Demo Bot</p>
+            <p style="color:rgba(255,255,255,0.7);margin:4px 0 0;">${INSTRUMENT_LABEL} — ${BOT_NAME} Bot</p>
           </div>
           <div style="background:#f9f9f9;padding:20px;border-radius:0 0 8px 8px;">
             <p style="font-size:15px;color:#333;">${message}</p>
             <hr style="border:none;border-top:1px solid #ddd;margin:16px 0;">
-            <p style="font-size:11px;color:#999;">Gold Demo Bot — branditessex.com</p>
+            <p style="font-size:11px;color:#999;">${BOT_NAME} Bot — branditessex.com</p>
           </div>
         </div>
       `
@@ -85,7 +86,7 @@ async function sendReport(subject, html) {
   }
   try {
     await resend.emails.send({
-      from: 'Gold Demo <noreply@branditessex.com>',
+      from: `${BOT_NAME} <noreply@branditessex.com>`,
       to: process.env.ALERT_EMAIL,
       subject,
       html
