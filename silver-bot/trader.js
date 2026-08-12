@@ -568,39 +568,42 @@ async function moveStop(tradeId, price) {
 
 async function checkClosedTrades() {
   try {
-    const url = `${BASE}/v3/accounts/${ACCOUNT}/trades?state=CLOSED&instrument=${INSTRUMENT}&count=20`;
-    const res = await http.get(url);
-    const closed = res.data.trades || [];
-    if (closed.length === 0) return;
-
+    // Book by DIRECT LOOKUP of our own open trades, not by scanning a windowed
+    // CLOSED list. The old approach (trades?state=CLOSED&count=20) only returned a
+    // slice of the account's closed history — once that history grew past the
+    // window, newly-closed trades fell off the edge and were never booked (the
+    // "0 closed but the balance moved" bug). Here we fetch each trade we opened by
+    // its exact id, so booking is deterministic regardless of history size,
+    // ordering, or partial (scale-out) closes.
     const perf = readPerformance();
-    const openRecIds = perf.trades.filter(r => !r.closeTime).map(r => r.tradeId);
-    let booked = 0, skippedNoRec = 0, alreadyBooked = 0;
-    for (const t of closed) {
-      if (!t.closeTime) continue;
-      const id  = t.id.toString();
-      const rec = perf.trades.find(r => r.tradeId === id);
-      if (rec && rec.closeTime) { alreadyBooked++; continue; }   // already booked
-      const pl        = parseFloat(t.realizedPL || 0);
-      const exitPrice = parseFloat(t.averageClosePrice || t.price || 0);
-      // ONLY book trades this bot actually opened (i.e. we have an open record).
-      // Do NOT import trades we never opened — otherwise every reset re-grabs the
-      // last 20 CLOSED trades from the OANDA account history and re-pollutes the
-      // data with "unknown" trades that aren't ours.
-      if (!rec) {
-        skippedNoRec++;
-        console.warn(`[book] closed trade ${id} (£${pl.toFixed(2)}) has NO matching open record — skipping. This is why closes aren't booking. Open-record IDs: [${openRecIds.join(', ') || 'none'}]`);
-        continue;
+    const openRecs = perf.trades.filter(r => !r.closeTime && r.tradeId);
+    if (openRecs.length === 0) return;
+
+    let booked = 0, stillOpen = 0, missing = 0;
+    for (const rec of openRecs) {
+      try {
+        const res = await http.get(`${BASE}/v3/accounts/${ACCOUNT}/trades/${rec.tradeId}`);
+        const t = res.data.trade;
+        if (!t) { missing++; continue; }
+        if (t.state !== 'CLOSED' || !t.closeTime) { stillOpen++; continue; }   // partial/scale-out or still running
+
+        const pl        = parseFloat(t.realizedPL || 0);
+        const exitPrice = parseFloat(t.averageClosePrice || t.price || rec.entryPrice || 0);
+        recordTradeClose(rec.tradeId, exitPrice, pl);   // preserves the open record's metadata (mode/grade/R)
+        booked++;
+        const emoji = pl >= 0 ? '✅' : '❌';
+        await sendAlert(
+          `${INSTRUMENT_NAME} trade ${rec.tradeId} closed | ${rec.direction} ${rec.mode || ''} | £${pl.toFixed(2)}`,
+          { emoji, subject: `${emoji} ${BOT_NAME} — Trade Closed (£${pl.toFixed(2)})` });
+      } catch (e) {
+        // 404 here would mean the recorded id isn't a real OANDA trade id — surfaces
+        // a deeper recording bug instead of silently swallowing it.
+        console.warn(`[book] trade ${rec.tradeId} lookup failed: ${e.response?.status || e.message}`);
+        missing++;
       }
-      recordTradeClose(id, exitPrice, pl);
-      booked++;
-      const emoji = pl >= 0 ? '✅' : '❌';
-      await sendAlert(
-        `${INSTRUMENT_NAME} trade ${id} closed | ${rec.direction} ${rec.mode || ''} | £${pl.toFixed(2)}`,
-        { emoji, subject: `${emoji} ${BOT_NAME} — Trade Closed (£${pl.toFixed(2)})` });
     }
-    if (closed.length) {
-      console.log(`[book] checkClosedTrades: ${closed.length} closed on OANDA | booked ${booked} | already-booked ${alreadyBooked} | skipped-no-open-record ${skippedNoRec}`);
+    if (booked || missing) {
+      console.log(`[book] direct lookup of ${openRecs.length} open record(s) | booked ${booked} | still-open ${stillOpen} | missing/error ${missing}`);
     }
   } catch (err) {
     console.error('checkClosedTrades error:', err.message);
