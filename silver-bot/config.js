@@ -77,7 +77,7 @@ const PIP_VALUE_PER_LOT = SPEC.pipValuePerLot;
 const MAX_LOT           = SPEC.maxLot;
 const INSTRUMENT_LABEL  = SPEC.label;
 const INSTRUMENT_NAME   = SPEC.name;
-const BOT_NAME          = `${SPEC.name} Demo`;
+const BOT_NAME          = `${SPEC.name} ${isLive ? 'Live' : 'Demo'}`;   // e.g. "US30 Live" once TRADING_MODE=live — so emails don't mislabel a live bot as Demo
 
 // ─── TIMEFRAME ────────────────────────────────────────────────────────────────
 // The strategy is timeframe-portable: ENTRY_TF drives entries/regime, BIAS_TF the
