@@ -34,7 +34,7 @@ const HEADER_COLOURS = {
 // other sendAlert (trade opened/closed, halts, floor, etc.) is logged to console
 // only, so no more noise. The end-of-day report goes out via sendReport(), which
 // is unaffected by this gate.
-const EMAIL_EMOJI_ALLOWLIST = new Set(['🚀', '🔧']);
+const EMAIL_EMOJI_ALLOWLIST = new Set(['🚀', '🔧', '📈', '✅', '❌']);   // startup/error + trade OPENED (📈) and CLOSED win/loss (✅/❌) — same as the live gold bot
 
 async function sendAlert(message, { emoji = '⚠️', subject } = {}) {
   const emailSubject = subject || `${emoji} ${BOT_NAME}`;
