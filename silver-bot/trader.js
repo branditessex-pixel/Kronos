@@ -35,7 +35,7 @@
 const axios = require('axios');
 const {
   BASE, TOKEN, ACCOUNT, isLive,
-  INSTRUMENT, PIP_SIZE, PIP_VALUE_PER_LOT, INSTRUMENT_LABEL, INSTRUMENT_NAME, BOT_NAME,
+  INSTRUMENT, PIP_SIZE, PIP_VALUE_PER_LOT, MAX_LOT, INSTRUMENT_LABEL, INSTRUMENT_NAME, BOT_NAME,
   ENTRY_TF, BIAS_TF, ENTRY_TF_MIN
 } = require('./config');
 const { getCandles, getCandles15m, getCandles4h, getAccountInfo, getOpenPositions, getCurrentPrice } = require('./market');
@@ -418,7 +418,22 @@ async function runTradingCycle() {
 // ─── ORDER EXECUTION ──────────────────────────────────────────────────────────
 
 async function executeTrade(signal, lotSize) {
-  const rawUnits = parseFloat((lotSize * 100).toFixed(1));   // 1 lot = 100 units
+  // 2 dp so tiny sizes place correctly — US30 pins at 0.01 units, which .toFixed(1)
+  // would have rounded to 0.0 (a no-fill or, worse, an ambiguous order).
+  const rawUnits = parseFloat((lotSize * 100).toFixed(2));   // 1 lot = 100 units
+
+  // ── HARD LOT BACKSTOP ──────────────────────────────────────────────────────
+  // Absolute last line of defence against a huge lot by mistake: refuse to send
+  // any order above 5× the configured cap, or a non-positive size. The risk
+  // manager already clamps to MAX_LOT, but this catches anything that ever slips
+  // past it (a bad calc, a config typo) BEFORE it hits the live account.
+  const absMaxUnits = MAX_LOT * 100 * 5;
+  if (!(rawUnits > 0) || rawUnits > absMaxUnits) {
+    console.error(`SAFETY: refusing order — ${rawUnits} units (ceiling ${absMaxUnits}, lot ${lotSize}). Not placed.`);
+    writeLog({ type: 'SAFETY_BLOCK', reason: `Lot backstop: ${rawUnits}u vs ${absMaxUnits}u ceiling` });
+    return;
+  }
+
   const units    = signal.action === 'BUY' ? rawUnits : -rawUnits;
   const riskGBP  = parseFloat((lotSize * signal.slPips * PIP_VALUE_PER_LOT).toFixed(2));
 
