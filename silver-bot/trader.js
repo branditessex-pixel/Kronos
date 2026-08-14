@@ -40,7 +40,7 @@ const {
 } = require('./config');
 const { getCandles, getCandles15m, getCandles4h, getAccountInfo, getOpenPositions, getCurrentPrice } = require('./market');
 const { writeLog } = require('./log');
-const { recordTradeOpen, recordTradeClose, recordExcursion, recordExternalTradeClose, removeOpenRecord, readPerformance } = require('./performance');
+const { recordTradeOpen, recordTradeClose, recordExcursion, recordExternalTradeClose, removeOpenRecord, markPendingExit, readPerformance } = require('./performance');
 const { sendAlert } = require('./alerts');
 const { getLiveRiskAssessment, isTradingHalted } = require('./live-risk-manager');
 const { calculateEMA, calculateRSI, calculateMACD } = require('./indicators');
@@ -532,6 +532,7 @@ async function manageOpenPosition(pos, currentPrice) {
       const ageHours = (Date.now() - new Date(rec.openTime).getTime()) / 3600000;
       if (ageHours >= MAX_TRADE_HOURS) {
         await http.put(`${BASE}/v3/accounts/${ACCOUNT}/trades/${pos.id}/close`, {});
+        markPendingExit(pos.id, 'TIME_STOP');   // so checkClosedTrades books the true reason, not an inferred one
         console.log(`Trade ${pos.id} — TIME STOP after ${ageHours.toFixed(1)}h (never reached breakeven) — closed to free the book`);
         writeLog({ type: 'TIME_STOP', tradeId: pos.id, ageHours: +ageHours.toFixed(1), rAtStop: +rNow.toFixed(2) });
         return;

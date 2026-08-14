@@ -34,6 +34,8 @@ function recordTradeOpen(tradeId, decision, executionPrice) {
     pipsResult: null,
     profitGBP: null,
     outcome: null,
+    exitReason: null,          // how it closed: TP HIT | SL HIT | TIME_STOP | TRAIL/SCALE — set on close
+    pendingExitReason: null,   // set when the BOT initiates a close (e.g. time-stop) so booking records the true reason
     // ── Gold-demo measurement fields — tag every trade so we can split edge by sleeve ──
     mode: decision.mode || null,              // TREND | RANGE — which sleeve fired
     grade: decision.grade || null,            // A | B — setup quality at entry
@@ -91,7 +93,7 @@ function removeOpenRecord(tradeId) {
   return false;
 }
 
-function recordTradeClose(tradeId, exitPrice, profitGBP) {
+function recordTradeClose(tradeId, exitPrice, profitGBP, explicitReason = null) {
   const perf = readPerformance();
   const trade = perf.trades.find(t => t.tradeId === tradeId.toString() && !t.closeTime);
 
@@ -109,6 +111,21 @@ function recordTradeClose(tradeId, exitPrice, profitGBP) {
   trade.pipsResult = parseFloat(pips.toFixed(1));
   trade.profitGBP = parseFloat(profitGBP.toFixed(2));
   trade.outcome = profitGBP > 0 ? 'WIN' : profitGBP < 0 ? 'LOSS' : 'BREAKEVEN';
+
+  // Exit reason — how the trade actually ended. An explicit reason (bot-initiated,
+  // e.g. a time-stop) always wins; otherwise infer from where price closed relative
+  // to the planned target/stop. Note: winners often exit via the TRAILED stop after
+  // a scale-out rather than the fixed TP, so those land in TRAIL/SCALE — that's
+  // correct, not a miss. Tolerance is a few pips (or 5% of the stop distance).
+  let reason = explicitReason || trade.pendingExitReason;
+  if (!reason) {
+    const tol = Math.max(5 * PIP_SIZE, (trade.slPips || 0) * 0.05 * PIP_SIZE);
+    if (trade.takeProfit && Math.abs(exitPrice - trade.takeProfit) <= tol)      reason = 'TP HIT';
+    else if (trade.stopLoss && Math.abs(exitPrice - trade.stopLoss) <= tol)     reason = 'SL HIT';
+    else                                                                        reason = 'TRAIL/SCALE';
+  }
+  trade.exitReason = reason;
+  trade.pendingExitReason = null;
   // Realised R = £ made ÷ £ risked. The single most important number for judging
   // whether a sleeve has edge — expectancy is just the average of this. Money-based
   // (not pip-based) so it stays correct through partial scale-outs.
@@ -119,7 +136,19 @@ function recordTradeClose(tradeId, exitPrice, profitGBP) {
   }
 
   writePerformance(perf);
-  console.log(`Performance: trade ${tradeId} closed — ${trade.outcome} ${pips.toFixed(0)} pips £${profitGBP.toFixed(2)}`);
+  console.log(`Performance: trade ${tradeId} closed — ${trade.outcome} ${pips.toFixed(0)} pips £${profitGBP.toFixed(2)} (${trade.exitReason})`);
+}
+
+// Stamp an open record with the reason the BOT is closing it, BEFORE the close is
+// discovered and booked by checkClosedTrades(). Used for bot-initiated exits (e.g.
+// the 6h time-stop) so the booked trade carries the true reason instead of an
+// inferred one. No-op if the trade isn't found or is already closed.
+function markPendingExit(tradeId, reason) {
+  const perf = readPerformance();
+  const trade = perf.trades.find(t => t.tradeId === tradeId.toString() && !t.closeTime);
+  if (!trade) return;
+  trade.pendingExitReason = reason;
+  writePerformance(perf);
 }
 
 function generateSummary() {
@@ -328,4 +357,4 @@ function getExpectancyReport() {
   return { text, modes, overall };
 }
 
-module.exports = { recordTradeOpen, recordTradeClose, recordExcursion, recordExternalTradeClose, removeOpenRecord, generateSummary, readPerformance, getRecentPerformanceSummary, getPerformanceSummary: getRecentPerformanceSummary, getExpectancyReport };
+module.exports = { recordTradeOpen, recordTradeClose, recordExcursion, recordExternalTradeClose, removeOpenRecord, markPendingExit, generateSummary, readPerformance, getRecentPerformanceSummary, getPerformanceSummary: getRecentPerformanceSummary, getExpectancyReport };

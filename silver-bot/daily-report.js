@@ -178,7 +178,10 @@ async function buildReportData() {
   } catch (err) { apiError = err.message; }
 
   const realisedToday   = sum(closedToday.map(t => t.profitGBP));
-  const unrealisedNow   = account ? account.unrealizedPL : sum(positions.map(p => p.unrealizedProfit));
+  // Instrument-only: getOpenPositions() already filters to INSTRUMENT, so this is
+  // THIS bot's open risk — not account.unrealizedPL, which on a shared account also
+  // carries the other bot's (gold's) open positions.
+  const unrealisedNow   = sum(positions.map(p => p.unrealizedProfit || 0));
   const cumulativeGBP   = sum(closed.map(t => t.profitGBP));
 
   // Daily equity snapshot — appended once per day so account growth over time is
@@ -223,6 +226,7 @@ async function buildReportData() {
     byGrade:     breakdown(closed, t => t.grade),
     byDirection: breakdown(closed, t => t.direction),
     byMethod:    breakdown(closed, t => t.entryMethod),
+    byExitReason: breakdown(closed, t => t.exitReason || 'unknown'),
     byAdx:       breakdown(closed, t => adxBucket(t.regimeAdx)).sort((a, b) => a.key.localeCompare(b.key)),
     byHour:      breakdown(closed, t => t.openTime ? `${new Date(t.openTime).getUTCHours()}:00` : 'unknown')
                    .sort((a, b) => parseInt(a.key) - parseInt(b.key)),
@@ -233,7 +237,7 @@ async function buildReportData() {
     todaysTrades: closedToday.map(t => ({
       id: t.tradeId, dir: t.direction, mode: t.mode, grade: t.grade, method: t.entryMethod,
       entry: t.entryPrice, exit: t.exitPrice, slPips: t.slPips, adx: t.regimeAdx,
-      r: t.rMultiple, mfeR: t.mfeR, maeR: t.maeR, gbp: t.profitGBP, outcome: t.outcome,
+      r: t.rMultiple, mfeR: t.mfeR, maeR: t.maeR, gbp: t.profitGBP, outcome: t.outcome, exitReason: t.exitReason,
       holdMins: t.openTime && t.closeTime ? (new Date(t.closeTime) - new Date(t.openTime)) / 60000 : null
     })),
     activity: { byType, regimeSplit, topHoldReasons, blockReasons },
@@ -315,18 +319,24 @@ function renderHtml(d) {
     <p style="color:rgba(255,255,255,.85);margin:4px 0 0;font-size:13px;">${d.meta.label} · ${d.meta.mode} · ${d.meta.date} (UTC)</p></div>`;
   html += `<div style="background:#fafafa;padding:20px;border-radius:0 0 8px 8px;">`;
 
-  // Account & P&L
-  html += h2('Account & P&L');
-  if (acc) {
-    html += kv('Balance', `£${acc.balance.toFixed(2)}`);
-    html += kv('Equity', `£${acc.equity.toFixed(2)} ${acc.currency || ''}`);
-  } else {
-    html += `<p style="color:#8b0000;font-size:13px;">⚠️ Live account unavailable${d.apiError ? ` (${d.apiError})` : ''} — figures below are from stored trades only.</p>`;
-  }
-  html += kv('Realised P&L today', fG(d.pnl.realisedToday));
-  html += kv('Unrealised (open) now', fG(d.pnl.unrealisedNow));
-  html += kv('Cumulative realised P&L', fG(d.pnl.cumulativeGBP));
+  // P&L — lead with THIS bot's own booked P&L. The OANDA balance/equity is the
+  // SHARED account (this bot runs alongside gold on the same account), so it is not
+  // bot-specific — shown demoted below as context, never as the headline.
+  const label = d.meta.label;
+  const heroColour = d.pnl.cumulativeGBP >= 0 ? '#1a7a1a' : '#8b0000';
+  html += h2(`${label} P&L (this bot only)`);
+  html += `<div style="font-size:26px;font-weight:bold;color:${heroColour};line-height:1.1;margin:2px 0;">${fG(d.pnl.cumulativeGBP)}</div>`;
+  html += `<div style="font-size:12.5px;color:#666;margin-bottom:10px;">cumulative realised — ${label}'s own booked P&L, clean of the shared balance</div>`;
+  html += kv('Realised today', fG(d.pnl.realisedToday));
+  html += kv('Open (unrealised) now', fG(d.pnl.unrealisedNow));
   if (d.priceNow) html += kv('Price now (mid)', d.priceNow.mid.toFixed(2));
+
+  // Shared-account context — deliberately demoted so it isn't mistaken for US30's own.
+  if (acc) {
+    html += `<p style="font-size:12px;color:#999;margin-top:10px;">Shared account (gold + ${label}): balance £${acc.balance.toFixed(2)} · equity £${acc.equity.toFixed(2)} ${acc.currency || ''}. This is the <i>whole</i> account, not ${label} alone — judge ${label} by the realised figures above, not this balance.</p>`;
+  } else {
+    html += `<p style="color:#8b0000;font-size:13px;">⚠️ Live account unavailable${d.apiError ? ` (${d.apiError})` : ''} — figures above are from stored trades only.</p>`;
+  }
 
   // Account growth over time
   if (d.equityHistory && d.equityHistory.length) {
@@ -336,6 +346,7 @@ function renderHtml(d) {
         h.balance != null ? `£${h.balance.toFixed(2)}` : '—',
         h.equity != null ? `£${h.equity.toFixed(2)}` : '—',
         fG(h.realisedToday), fG(h.cumulativeRealisedGBP)]));
+    html += `<p style="font-size:12px;color:#999;">Balance/Equity are the shared account (gold + ${label}); the ${label}-only curve is the <b>Cumulative realised</b> column.</p>`;
   }
 
   // Headline metrics (all-time closed)
@@ -372,6 +383,12 @@ function renderHtml(d) {
   html += table(STATS_HEADERS, d.byDirection.map(s => statsRow(s.key, s)));
   html += h2('By entry method');
   html += table(STATS_HEADERS, d.byMethod.map(s => statsRow(s.key, s)));
+
+  html += h2('By exit reason — how did trades actually close?');
+  html += table(['Exit reason', 'Trades', 'Win%', 'Net £'],
+    d.byExitReason.map(s => [s.key, s.trades, fP(s.winRate), fG(s.totalGBP)]));
+  html += `<p style="font-size:12.5px;color:#555;">The check that answers "did it hit the stop?" at a glance. <b>TP HIT</b> = target reached · <b>SL HIT</b> = full stop · <b>TRAIL/SCALE</b> = banked/trailed out after moving the stop · <b>TIME_STOP</b> = cut at the 6h wall-clock limit for never reaching breakeven. Watch the <b>TIME_STOP</b> row: a pile of them means the setup keeps entering but the market gives no follow-through — the key warning sign for a range bot. A healthy book is mostly TP HIT / TRAIL, not time-stops.</p>`;
+
   html += h2('By ADX bucket at entry (regime quality vs outcome)');
   html += table(STATS_HEADERS, d.byAdx.map(s => statsRow(s.key, s)));
   html += h2('By hour opened (UTC)');
