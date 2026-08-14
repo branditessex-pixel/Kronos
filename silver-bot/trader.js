@@ -40,7 +40,7 @@ const {
 } = require('./config');
 const { getCandles, getCandles15m, getCandles4h, getAccountInfo, getOpenPositions, getCurrentPrice } = require('./market');
 const { writeLog } = require('./log');
-const { recordTradeOpen, recordTradeClose, recordExcursion, recordExternalTradeClose, readPerformance } = require('./performance');
+const { recordTradeOpen, recordTradeClose, recordExcursion, recordExternalTradeClose, removeOpenRecord, readPerformance } = require('./performance');
 const { sendAlert } = require('./alerts');
 const { getLiveRiskAssessment, isTradingHalted } = require('./live-risk-manager');
 const { calculateEMA, calculateRSI, calculateMACD } = require('./indicators');
@@ -594,7 +594,7 @@ async function checkClosedTrades() {
     const openRecs = perf.trades.filter(r => !r.closeTime && r.tradeId);
     if (openRecs.length === 0) return;
 
-    let booked = 0, stillOpen = 0, missing = 0;
+    let booked = 0, stillOpen = 0, missing = 0, pruned = 0;
     for (const rec of openRecs) {
       try {
         const res = await http.get(`${BASE}/v3/accounts/${ACCOUNT}/trades/${rec.tradeId}`);
@@ -611,14 +611,20 @@ async function checkClosedTrades() {
           `${INSTRUMENT_NAME} trade ${rec.tradeId} closed | ${rec.direction} ${rec.mode || ''} | £${pl.toFixed(2)}`,
           { emoji, subject: `${emoji} ${BOT_NAME} — Trade Closed (£${pl.toFixed(2)})` });
       } catch (e) {
-        // 404 here would mean the recorded id isn't a real OANDA trade id — surfaces
-        // a deeper recording bug instead of silently swallowing it.
-        console.warn(`[book] trade ${rec.tradeId} lookup failed: ${e.response?.status || e.message}`);
-        missing++;
+        // A definitive 404 = the trade isn't on this account (stale demo record
+        // carried into the live bot, or a post-reset orphan). Prune it so it stops
+        // 404-ing every cycle. Any OTHER error is transient — log and retry later.
+        if (e.response?.status === 404) {
+          removeOpenRecord(rec.tradeId);
+          pruned++;
+        } else {
+          console.warn(`[book] trade ${rec.tradeId} lookup failed: ${e.response?.status || e.message}`);
+          missing++;
+        }
       }
     }
-    if (booked || missing) {
-      console.log(`[book] direct lookup of ${openRecs.length} open record(s) | booked ${booked} | still-open ${stillOpen} | missing/error ${missing}`);
+    if (booked || missing || pruned) {
+      console.log(`[book] direct lookup of ${openRecs.length} open record(s) | booked ${booked} | still-open ${stillOpen} | pruned-stale ${pruned} | missing/error ${missing}`);
     }
   } catch (err) {
     console.error('checkClosedTrades error:', err.message);

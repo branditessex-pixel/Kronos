@@ -75,6 +75,22 @@ function recordExcursion(tradeId, rNow) {
   }
 }
 
+// Drop a stale OPEN record whose trade no longer exists on the account. A definitive
+// 404 on lookup means it isn't ours to book — e.g. a demo record carried into the
+// live bot when the volume wasn't reset, or a post-reset orphan. Removing it stops
+// the endless per-cycle 404 retries without touching any real trade.
+function removeOpenRecord(tradeId) {
+  const perf = readPerformance();
+  const before = perf.trades.length;
+  perf.trades = perf.trades.filter(t => !(t.tradeId === tradeId.toString() && !t.closeTime));
+  if (perf.trades.length !== before) {
+    writePerformance(perf);
+    console.log(`[book] pruned stale open record ${tradeId} — not on this account`);
+    return true;
+  }
+  return false;
+}
+
 function recordTradeClose(tradeId, exitPrice, profitGBP) {
   const perf = readPerformance();
   const trade = perf.trades.find(t => t.tradeId === tradeId.toString() && !t.closeTime);
@@ -312,4 +328,4 @@ function getExpectancyReport() {
   return { text, modes, overall };
 }
 
-module.exports = { recordTradeOpen, recordTradeClose, recordExcursion, recordExternalTradeClose, generateSummary, readPerformance, getRecentPerformanceSummary, getPerformanceSummary: getRecentPerformanceSummary, getExpectancyReport };
+module.exports = { recordTradeOpen, recordTradeClose, recordExcursion, recordExternalTradeClose, removeOpenRecord, generateSummary, readPerformance, getRecentPerformanceSummary, getPerformanceSummary: getRecentPerformanceSummary, getExpectancyReport };
