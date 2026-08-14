@@ -257,10 +257,28 @@ function snapshotEquity(account, { realisedToday, cumulativeGBP }) {
     balance:  account ? account.balance : null,
     equity:   account ? account.equity  : null,
     realisedToday,
-    cumulativeRealisedGBP: cumulativeGBP
+    cumulativeRealisedGBP: cumulativeGBP,
+    live: isLive                        // tag each row so demo snapshots never pollute the live growth table
   };
   const idx = hist.findIndex(h => h.date === today);
   if (idx >= 0) hist[idx] = entry; else hist.push(entry);
+
+  // Self-heal stale demo rows. The US30 service reused the demo /data volume, so
+  // equity-history carried demo-era snapshots (a ~£85k demo balance) into the live
+  // growth table. Rule: rows tagged {live:true} are always kept; {live:false} are
+  // dropped; legacy untagged rows are kept only if their balance is in scale with
+  // the live account (≤5× the current live balance) — the ~£85k demo rows are
+  // 200×+ out of scale and get pruned, while the genuine go-live baseline stays.
+  // The scale check is skipped when the account API is unavailable (never prunes on
+  // missing data — it just heals on the next cycle).
+  const liveBal = (account && account.balance) ? account.balance : null;
+  hist = hist.filter(h => {
+    if (h.live === true)  return true;
+    if (h.live === false) return false;
+    if (liveBal && h.balance != null && h.balance > liveBal * 5) return false;
+    return true;
+  });
+
   try { fs.writeFileSync(file, JSON.stringify(hist, null, 2), 'utf8'); } catch (err) { console.error('equity-history write failed:', err.message); }
   return hist;
 }
