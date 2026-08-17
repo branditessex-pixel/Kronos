@@ -40,7 +40,7 @@ const {
 } = require('./config');
 const { getCandles, getCandles15m, getCandles4h, getAccountInfo, getOpenPositions, getCurrentPrice } = require('./market');
 const { writeLog } = require('./log');
-const { recordTradeOpen, recordTradeClose, recordExcursion, recordExternalTradeClose, removeOpenRecord, markPendingExit, readPerformance } = require('./performance');
+const { recordTradeOpen, recordTradeClose, recordExcursion, recordExternalTradeClose, removeOpenRecord, markPendingExit, resolveTimeStopWatches, readPerformance } = require('./performance');
 const { sendAlert } = require('./alerts');
 const { getLiveRiskAssessment, isTradingHalted } = require('./live-risk-manager');
 const { calculateEMA, calculateRSI, calculateMACD } = require('./indicators');
@@ -348,6 +348,9 @@ async function runTradingCycle() {
       getOpenPositions(),
       getCurrentPrice(INSTRUMENT)
     ]);
+
+    // Update the post-cut watch on any timed-out trades (read-only what-if — does not trade)
+    resolveTimeStopWatches(currentPrice.mid);
 
     // Manage any open trades first (scale-out / breakeven / trail)
     for (const pos of openPositions) await manageOpenPosition(pos, currentPrice);

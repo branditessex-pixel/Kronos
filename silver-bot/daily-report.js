@@ -137,6 +137,21 @@ function breakdown(trades, keyFn) {
     .sort((a, b) => b.trades - a.trades);
 }
 
+// Time-stop what-if — of the trades we cut at 6h, where did price go afterwards?
+function timeStopWhatIf(closed) {
+  const ts = closed.filter(t => t.exitReason === 'TIME_STOP' && t.timeStopWhatIf);
+  if (!ts.length) return null;
+  const c = { WOULD_TP: 0, WOULD_SL: 0, SCRATCH: 0, PENDING: 0 };
+  for (const t of ts) {
+    const r = t.timeStopWhatIf.resolved;
+    if (r === 'WOULD_TP') c.WOULD_TP++;
+    else if (r === 'WOULD_SL') c.WOULD_SL++;
+    else if (r === 'SCRATCH') c.SCRATCH++;
+    else c.PENDING++;
+  }
+  return { total: ts.length, ...c };
+}
+
 function drawdownAndStreaks(closedSortedByClose) {
   let cum = 0, peak = 0, maxDdGBP = 0;
   let cumR = 0, peakR = 0, maxDdR = 0;
@@ -227,6 +242,7 @@ async function buildReportData() {
     byDirection: breakdown(closed, t => t.direction),
     byMethod:    breakdown(closed, t => t.entryMethod),
     byExitReason: breakdown(closed, t => t.exitReason || 'unknown'),
+    timeStop:    timeStopWhatIf(closed),
     byAdx:       breakdown(closed, t => adxBucket(t.regimeAdx)).sort((a, b) => a.key.localeCompare(b.key)),
     byHour:      breakdown(closed, t => t.openTime ? `${new Date(t.openTime).getUTCHours()}:00` : 'unknown')
                    .sort((a, b) => parseInt(a.key) - parseInt(b.key)),
@@ -388,6 +404,17 @@ function renderHtml(d) {
   html += table(['Exit reason', 'Trades', 'Win%', 'Net £'],
     d.byExitReason.map(s => [s.key, s.trades, fP(s.winRate), fG(s.totalGBP)]));
   html += `<p style="font-size:12.5px;color:#555;">The check that answers "did it hit the stop?" at a glance. <b>TP HIT</b> = target reached · <b>SL HIT</b> = full stop · <b>TRAIL/SCALE</b> = banked/trailed out after moving the stop · <b>TIME_STOP</b> = cut at the 6h wall-clock limit for never reaching breakeven. Watch the <b>TIME_STOP</b> row: a pile of them means the setup keeps entering but the market gives no follow-through — the key warning sign for a range bot. A healthy book is mostly TP HIT / TRAIL, not time-stops.</p>`;
+
+  if (d.timeStop) {
+    const t = d.timeStop;
+    html += h2('Time-stop what-if — are the 6h cuts right?');
+    html += table(['After the cut, price would have…', 'Count'],
+      [['✅ Hit the target — we cut a winner', t.WOULD_TP],
+       ['🛑 Hit the stop — the cut saved a bigger loss', t.WOULD_SL],
+       ['➖ Just drifted / scratched — cut was neutral', t.SCRATCH],
+       ['⏳ Still watching', t.PENDING]]);
+    html += `<p style="font-size:12.5px;color:#555;">Each 6h cut is watched for up to 12h afterwards. If many would have <b>hit the target</b>, we're cutting too early — lengthen the time-stop. If most would have <b>hit the stop</b> or just drifted, the cut is doing its job (tiny loss, book freed). Estimate from 5-min sampling — read the direction, not the exact count. Needs a handful before it means anything.</p>`;
+  }
 
   html += h2('By ADX bucket at entry (regime quality vs outcome)');
   html += table(STATS_HEADERS, d.byAdx.map(s => statsRow(s.key, s)));

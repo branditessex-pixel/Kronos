@@ -126,6 +126,11 @@ function recordTradeClose(tradeId, exitPrice, profitGBP, explicitReason = null) 
   }
   trade.exitReason = reason;
   trade.pendingExitReason = null;
+  // Arm a post-cut watch on time-stops: after we cut it, would price have hit the
+  // target (we cut a winner), the stop (the cut saved a bigger loss), or just drifted
+  // (the cut was right)? resolveTimeStopWatches() fills this in over the following
+  // hours. Read-only — it never changes how the bot trades.
+  if (trade.exitReason === 'TIME_STOP') trade.timeStopWhatIf = { resolved: null, resolvedAt: null };
   // Realised R = £ made ÷ £ risked. The single most important number for judging
   // whether a sleeve has edge — expectancy is just the average of this. Money-based
   // (not pip-based) so it stays correct through partial scale-outs.
@@ -138,6 +143,35 @@ function recordTradeClose(tradeId, exitPrice, profitGBP, explicitReason = null) 
   writePerformance(perf);
   console.log(`Performance: trade ${tradeId} closed — ${trade.outcome} ${pips.toFixed(0)} pips £${profitGBP.toFixed(2)} (${trade.exitReason})`);
   return trade;   // so the caller (close-alert email) can show exit reason / R without re-reading
+}
+
+// Post-cut watch resolver — called each cycle with the current mid price. For every
+// time-stopped trade still being watched, decide whether price has since reached the
+// original target (WOULD_TP = we cut a winner), the original stop (WOULD_SL = the cut
+// saved a bigger loss), or drifted past the watch window without either (SCRATCH =
+// the cut was neutral / right to free the book). Estimate from 5-min sampling.
+const TIMESTOP_WATCH_HOURS = 12;
+function resolveTimeStopWatches(mid, watchHours = TIMESTOP_WATCH_HOURS) {
+  if (mid == null) return;
+  const perf = readPerformance();
+  let changed = false;
+  const now = Date.now();
+  for (const t of perf.trades) {
+    if (t.exitReason !== 'TIME_STOP' || !t.timeStopWhatIf || t.timeStopWhatIf.resolved) continue;
+    if (t.stopLoss == null || t.takeProfit == null || !t.closeTime) continue;
+    const hitTP = t.direction === 'BUY' ? mid >= t.takeProfit : mid <= t.takeProfit;
+    const hitSL = t.direction === 'BUY' ? mid <= t.stopLoss   : mid >= t.stopLoss;
+    let resolved = null;
+    if (hitTP)      resolved = 'WOULD_TP';
+    else if (hitSL) resolved = 'WOULD_SL';
+    else if ((now - new Date(t.closeTime).getTime()) / 3600000 >= watchHours) resolved = 'SCRATCH';
+    if (resolved) {
+      t.timeStopWhatIf.resolved = resolved;
+      t.timeStopWhatIf.resolvedAt = new Date(now).toISOString();
+      changed = true;
+    }
+  }
+  if (changed) writePerformance(perf);
 }
 
 // Stamp an open record with the reason the BOT is closing it, BEFORE the close is
@@ -358,4 +392,4 @@ function getExpectancyReport() {
   return { text, modes, overall };
 }
 
-module.exports = { recordTradeOpen, recordTradeClose, recordExcursion, recordExternalTradeClose, removeOpenRecord, markPendingExit, generateSummary, readPerformance, getRecentPerformanceSummary, getPerformanceSummary: getRecentPerformanceSummary, getExpectancyReport };
+module.exports = { recordTradeOpen, recordTradeClose, recordExcursion, recordExternalTradeClose, removeOpenRecord, markPendingExit, resolveTimeStopWatches, generateSummary, readPerformance, getRecentPerformanceSummary, getPerformanceSummary: getRecentPerformanceSummary, getExpectancyReport };
