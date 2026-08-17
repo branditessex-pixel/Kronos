@@ -249,7 +249,7 @@ function evaluateTrend(candles1h, candles4h, currentPrice, adx) {
 
 // ─── ENTRY: RANGE SLEEVE ──────────────────────────────────────────────────────
 
-function evaluateRange(candles1h, currentPrice, adx) {
+function evaluateRange(candles1h, candles4h, currentPrice, adx) {
   // Dead-market floor — don't fade a flatlined market (no oscillation = no bounce =
   // the trade just sits until the time-stop). Targets the US30 time-stop losses.
   if (adx < RANGE_ADX_FLOOR) return hold(`Range too dead to fade (ADX ${adx.toFixed(1)} < ${RANGE_ADX_FLOOR})`);
@@ -269,8 +269,18 @@ function evaluateRange(candles1h, currentPrice, adx) {
   const rsi        = calculateRSI(candles1h.map(c => c.close), 14);
   const last       = candles1h[candles1h.length - 2] || candles1h[candles1h.length - 1]; // last completed
 
+  // Higher-timeframe trend filter — don't fade AGAINST a clear bias. Buying the range
+  // bottom into a clear downtrend (or selling the top into a clear uptrend) is fighting
+  // the bigger move — the "buying into a downtrend" problem. Same EMA50 + neutral band
+  // the trend sleeve uses. Fades still fire when the bias is neutral or on their side.
+  const closes4h = candles4h.map(c => c.close);
+  const biasEma  = closes4h.length >= 50 ? calculateEMA(closes4h, 50) : null;
+  const biasBull = biasEma != null && price > biasEma + BIAS_NEUTRAL_ATR * atr;
+  const biasBear = biasEma != null && price < biasEma - BIAS_NEUTRAL_ATR * atr;
+
   // Fade the top: near range high, RSI stretched up, candle rejecting (bearish)
   if (posInRange >= 1 - RANGE_EDGE_PCT && rsi >= RANGE_RSI_HI) {
+    if (biasBull) return hold(`Top-fade skipped — ${BIAS_TF} bias is UP (price above EMA50), won't sell into an uptrend`);
     const rejecting = last.close < last.open || (last.high - Math.max(last.open, last.close)) > (last.high - last.low) * 0.4;
     if (rejecting) {
       const slPips = clampSlWithSpread(Math.round(((rangeHigh - price) / PIP_SIZE) + (atr / PIP_SIZE) * ATR_SL_MULT_RANGE), spreadPips);
@@ -282,6 +292,7 @@ function evaluateRange(candles1h, currentPrice, adx) {
   }
   // Fade the bottom
   if (posInRange <= RANGE_EDGE_PCT && rsi <= RANGE_RSI_LO) {
+    if (biasBear) return hold(`Bottom-fade skipped — ${BIAS_TF} bias is DOWN (price below EMA50), won't buy into a downtrend`);
     const rejecting = last.close > last.open || (Math.min(last.open, last.close) - last.low) > (last.high - last.low) * 0.4;
     if (rejecting) {
       const slPips = clampSlWithSpread(Math.round(((price - rangeLow) / PIP_SIZE) + (atr / PIP_SIZE) * ATR_SL_MULT_RANGE), spreadPips);
@@ -373,7 +384,7 @@ async function runTradingCycle() {
     const { regime, adx } = detectRegime(candles1h);
     const signal = regime === 'TREND'
       ? evaluateTrend(candles1h, candles4h, currentPrice, adx)
-      : evaluateRange(candles1h, currentPrice, adx);
+      : evaluateRange(candles1h, candles4h, currentPrice, adx);
 
     console.log(`Regime: ${regime} (ADX ${adx.toFixed(1)}) | ${signal.shouldEnter ? `${signal.action} ${signal.mode}/${signal.entryMethod} grade ${signal.grade}` : 'HOLD'} | ${signal.reasoning}`);
 
