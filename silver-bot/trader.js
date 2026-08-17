@@ -61,6 +61,7 @@ const MAX_CONCURRENT_TRADES = 2;   // gold-model value (replicating the live gol
 // strategy exactly on US30, so its edge is comparable like-for-like.
 const ADX_TREND_MIN = 22;
 const ADX_RANGE_MAX = 18;
+const RANGE_ADX_FLOOR = 15;   // dead-market floor: below this the market is flatlined — a fade has no wobble to bounce off, so stand aside (both US30 time-stop losses were sub-15; the winner had ADX ~19)
 
 // ER constants retained for the calcER helper (exported for tests) but the regime
 // gate itself is DISABLED to match the gold model, which is ADX-only (the ER
@@ -249,6 +250,10 @@ function evaluateTrend(candles1h, candles4h, currentPrice, adx) {
 // ─── ENTRY: RANGE SLEEVE ──────────────────────────────────────────────────────
 
 function evaluateRange(candles1h, currentPrice, adx) {
+  // Dead-market floor — don't fade a flatlined market (no oscillation = no bounce =
+  // the trade just sits until the time-stop). Targets the US30 time-stop losses.
+  if (adx < RANGE_ADX_FLOOR) return hold(`Range too dead to fade (ADX ${adx.toFixed(1)} < ${RANGE_ADX_FLOOR})`);
+
   const recent = candles1h.slice(-RANGE_LOOKBACK);
   if (recent.length < RANGE_LOOKBACK) return hold('Insufficient entry-TF data for range');
 
