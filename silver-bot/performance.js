@@ -137,6 +137,7 @@ function recordTradeClose(tradeId, exitPrice, profitGBP, explicitReason = null) 
 
   writePerformance(perf);
   console.log(`Performance: trade ${tradeId} closed — ${trade.outcome} ${pips.toFixed(0)} pips £${profitGBP.toFixed(2)} (${trade.exitReason})`);
+  return trade;   // so the caller (close-alert email) can show exit reason / R without re-reading
 }
 
 // Stamp an open record with the reason the BOT is closing it, BEFORE the close is

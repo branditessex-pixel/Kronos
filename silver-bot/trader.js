@@ -487,8 +487,18 @@ async function executeTrade(signal, lotSize) {
   }, fillPx);
 
   const label = isLive ? '🔴 LIVE' : '🟢 DEMO';
+  // Entry-read line — the fingerprint we judge quality by. Method-specific: trend/
+  // breakout entries report distance from the H1 EMA20 (extension); range fades
+  // report how far into the range edge we faded. Breakouts at high RSI are a chase.
+  const ctx = signal.context || {};
+  const rsiStr = ctx.rsi != null ? ctx.rsi.toFixed(0) : '—';
+  const locStr = ctx.distEma20Pips != null ? ` · ${ctx.distEma20Pips >= 0 ? '+' : ''}${ctx.distEma20Pips.toFixed(0)}p vs EMA20`
+               : ctx.posInRangePct != null ? ` · ${ctx.posInRangePct.toFixed(0)}% in range` : '';
+  const macdStr = ctx.macdHist != null ? ` · MACD ${ctx.macdHist.toFixed(2)}` : '';
+  const stretched = (signal.entryMethod === 'BREAKOUT' && ctx.rsi != null && ctx.rsi >= 70) ? ' ⚠️ stretched breakout (elevated RSI)' : '';
   await sendAlert(
-    `${label} ${INSTRUMENT_NAME} ${signal.action} | ${signal.mode}/${signal.entryMethod} (grade ${signal.grade}) | Entry ${fillPx} | SL ${signal.stopLoss} | TP ${signal.takeProfit} | ${signal.slPips}p risk | ${lotSize} lot (£${riskGBP} risk)`,
+    `${label} ${INSTRUMENT_NAME} ${signal.action} | ${signal.mode}/${signal.entryMethod} (grade ${signal.grade}) | Entry ${fillPx} | SL ${signal.stopLoss} | TP ${signal.takeProfit} | ${signal.slPips}p risk | ${lotSize} lot (£${riskGBP} risk)` +
+    `<br>Entry read: ADX ${signal.adx.toFixed(1)} · RSI ${rsiStr}${locStr}${macdStr}${stretched}`,
     { emoji: '📈', subject: `📈 ${BOT_NAME} — ${signal.action} ${signal.mode}` }
   );
   console.log(`Trade ${tradeId} opened: ${signal.action} ${signal.mode} @ ${fillPx}`);
@@ -605,11 +615,22 @@ async function checkClosedTrades() {
 
         const pl        = parseFloat(t.realizedPL || 0);
         const exitPrice = parseFloat(t.averageClosePrice || t.price || rec.entryPrice || 0);
-        recordTradeClose(rec.tradeId, exitPrice, pl);   // preserves the open record's metadata (mode/grade/R)
+        const closedTrade = recordTradeClose(rec.tradeId, exitPrice, pl);   // preserves the open record's metadata (mode/grade/R)
         booked++;
         const emoji = pl >= 0 ? '✅' : '❌';
+        // Tie the result to the entry fingerprint AND the exit reason, so a close is
+        // fully diagnosable from the email alone (no log needed) — e.g. "did it hit SL
+        // or time-stop?" is answered right here.
+        const pips  = rec.direction === 'BUY' ? (exitPrice - rec.entryPrice) / PIP_SIZE : (rec.entryPrice - exitPrice) / PIP_SIZE;
+        const rMult = closedTrade?.rMultiple != null ? closedTrade.rMultiple : (rec.riskGBP ? pl / rec.riskGBP : null);
+        const exitReason = closedTrade?.exitReason || '—';
+        const ectx = rec.entryContext || {};
+        const locBit = ectx.distEma20Pips != null ? ` · ${ectx.distEma20Pips >= 0 ? '+' : ''}${ectx.distEma20Pips.toFixed(0)}p vs EMA20`
+                     : ectx.posInRangePct != null ? ` · ${ectx.posInRangePct.toFixed(0)}% in range` : '';
+        const entryRead = `${rec.entryMethod || rec.mode || '—'}${rec.grade ? ` grade ${rec.grade}` : ''}${ectx.rsi != null ? ` · entry RSI ${ectx.rsi.toFixed(0)}` : ''}${locBit}`;
         await sendAlert(
-          `${INSTRUMENT_NAME} trade ${rec.tradeId} closed | ${rec.direction} ${rec.mode || ''} | £${pl.toFixed(2)}`,
+          `${INSTRUMENT_NAME} trade ${rec.tradeId} closed | ${rec.direction} ${rec.mode || ''} | £${pl.toFixed(2)}${rMult != null ? ` (${rMult >= 0 ? '+' : ''}${rMult.toFixed(2)}R)` : ''} · ${pips >= 0 ? '+' : ''}${pips.toFixed(0)}p · exit: ${exitReason}` +
+          `<br>Entry was: ${entryRead}`,
           { emoji, subject: `${emoji} ${BOT_NAME} — Trade Closed (£${pl.toFixed(2)})` });
       } catch (e) {
         // A definitive 404 = the trade isn't on this account (stale demo record
