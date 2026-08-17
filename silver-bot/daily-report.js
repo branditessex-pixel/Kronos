@@ -152,6 +152,23 @@ function timeStopWhatIf(closed) {
   return { total: ts.length, ...c };
 }
 
+// Skipped-fade what-if — of the fades our guards blocked, would they have won or lost?
+// Split by which guard blocked them so we can see WHICH dial (if any) is too strict.
+function skippedFadeWhatIf(perf) {
+  const sf = (perf && perf.skippedFades) || [];
+  if (!sf.length) return null;
+  const bucket = () => ({ WOULD_WIN: 0, WOULD_LOSE: 0, SCRATCH: 0, PENDING: 0 });
+  const byReason = { COUNTER_TREND: bucket(), DEAD_MARKET: bucket() };
+  const all = bucket();
+  for (const s of sf) {
+    const key = s.resolved || 'PENDING';
+    if (!byReason[s.reason]) byReason[s.reason] = bucket();
+    if (byReason[s.reason][key] !== undefined) byReason[s.reason][key]++;
+    if (all[key] !== undefined) all[key]++;
+  }
+  return { total: sf.length, all, byReason };
+}
+
 function drawdownAndStreaks(closedSortedByClose) {
   let cum = 0, peak = 0, maxDdGBP = 0;
   let cumR = 0, peakR = 0, maxDdR = 0;
@@ -243,6 +260,7 @@ async function buildReportData() {
     byMethod:    breakdown(closed, t => t.entryMethod),
     byExitReason: breakdown(closed, t => t.exitReason || 'unknown'),
     timeStop:    timeStopWhatIf(closed),
+    skippedFades: skippedFadeWhatIf(perf),
     byAdx:       breakdown(closed, t => adxBucket(t.regimeAdx)).sort((a, b) => a.key.localeCompare(b.key)),
     byHour:      breakdown(closed, t => t.openTime ? `${new Date(t.openTime).getUTCHours()}:00` : 'unknown')
                    .sort((a, b) => parseInt(a.key) - parseInt(b.key)),
@@ -414,6 +432,18 @@ function renderHtml(d) {
        ['➖ Just drifted / scratched — cut was neutral', t.SCRATCH],
        ['⏳ Still watching', t.PENDING]]);
     html += `<p style="font-size:12.5px;color:#555;">Each 6h cut is watched for up to 12h afterwards. If many would have <b>hit the target</b>, we're cutting too early — lengthen the time-stop. If most would have <b>hit the stop</b> or just drifted, the cut is doing its job (tiny loss, book freed). Estimate from 5-min sampling — read the direction, not the exact count. Needs a handful before it means anything.</p>`;
+  }
+
+  if (d.skippedFades) {
+    const s = d.skippedFades;
+    const rowFor = (label, b) => [label, b.WOULD_WIN, b.WOULD_LOSE, b.SCRATCH, b.PENDING];
+    const rows = [];
+    if (s.byReason.COUNTER_TREND) rows.push(rowFor('Counter-trend (H4 bias filter)', s.byReason.COUNTER_TREND));
+    if (s.byReason.DEAD_MARKET)   rows.push(rowFor('Dead market (ADX floor)',        s.byReason.DEAD_MARKET));
+    rows.push(rowFor('All skipped fades', s.all));
+    html += h2('Skipped-fade what-if — are the fade filters too strict?');
+    html += table(['Skipped because', "Would've won", "Would've lost", 'Scratched', 'Watching'], rows);
+    html += `<p style="font-size:12.5px;color:#555;">Every fade a guard blocks is watched for up to 12h to see what it would have done. Read each row on its own: if <b>would've won ≫ would've lost</b>, that filter is too strict — loosen that dial. If <b>would've lost</b> dominates (or they just scratched), the filter is saving you money — leave it. This is the number that decides whether we've over-tightened. Estimate from 5-min sampling; needs a handful of resolved skips before it means anything.</p>`;
   }
 
   html += h2('By ADX bucket at entry (regime quality vs outcome)');

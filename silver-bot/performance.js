@@ -174,6 +174,44 @@ function resolveTimeStopWatches(mid, watchHours = TIMESTOP_WATCH_HOURS) {
   if (changed) writePerformance(perf);
 }
 
+// Skipped-fade what-if — when a guard (dead-market floor or counter-trend filter)
+// blocks a fade we WOULD otherwise have taken, log it with the entry/stop/target it
+// would have had, then resolveSkippedFades() checks later whether price would have
+// hit that target (WOULD_WIN — filter too strict) or stop (WOULD_LOSE — filter saved
+// us). Deduped to one OPEN skip per direction so a fade sitting at the edge for many
+// cycles is recorded once, not every 5 minutes. Read-only — never places a trade.
+function recordSkippedFade(direction, wouldEntry, wouldSL, wouldTP, reason) {
+  const perf = readPerformance();
+  if (!perf.skippedFades) perf.skippedFades = [];
+  if (perf.skippedFades.some(s => s.direction === direction && !s.resolved)) return;
+  perf.skippedFades.push({
+    direction, wouldEntry, wouldSL, wouldTP, reason,
+    openedAt: new Date().toISOString(), resolved: null, resolvedAt: null
+  });
+  if (perf.skippedFades.length > 1000) perf.skippedFades = perf.skippedFades.slice(-1000);
+  writePerformance(perf);
+}
+
+function resolveSkippedFades(mid, watchHours = TIMESTOP_WATCH_HOURS) {
+  if (mid == null) return;
+  const perf = readPerformance();
+  if (!perf.skippedFades || !perf.skippedFades.length) return;
+  let changed = false;
+  const now = Date.now();
+  for (const s of perf.skippedFades) {
+    if (s.resolved) continue;
+    if (s.wouldSL == null || s.wouldTP == null || !s.openedAt) continue;
+    const hitTP = s.direction === 'BUY' ? mid >= s.wouldTP : mid <= s.wouldTP;
+    const hitSL = s.direction === 'BUY' ? mid <= s.wouldSL : mid >= s.wouldSL;
+    let resolved = null;
+    if (hitTP)      resolved = 'WOULD_WIN';
+    else if (hitSL) resolved = 'WOULD_LOSE';
+    else if ((now - new Date(s.openedAt).getTime()) / 3600000 >= watchHours) resolved = 'SCRATCH';
+    if (resolved) { s.resolved = resolved; s.resolvedAt = new Date(now).toISOString(); changed = true; }
+  }
+  if (changed) writePerformance(perf);
+}
+
 // Stamp an open record with the reason the BOT is closing it, BEFORE the close is
 // discovered and booked by checkClosedTrades(). Used for bot-initiated exits (e.g.
 // the 6h time-stop) so the booked trade carries the true reason instead of an
@@ -392,4 +430,4 @@ function getExpectancyReport() {
   return { text, modes, overall };
 }
 
-module.exports = { recordTradeOpen, recordTradeClose, recordExcursion, recordExternalTradeClose, removeOpenRecord, markPendingExit, resolveTimeStopWatches, generateSummary, readPerformance, getRecentPerformanceSummary, getPerformanceSummary: getRecentPerformanceSummary, getExpectancyReport };
+module.exports = { recordTradeOpen, recordTradeClose, recordExcursion, recordExternalTradeClose, removeOpenRecord, markPendingExit, resolveTimeStopWatches, recordSkippedFade, resolveSkippedFades, generateSummary, readPerformance, getRecentPerformanceSummary, getPerformanceSummary: getRecentPerformanceSummary, getExpectancyReport };

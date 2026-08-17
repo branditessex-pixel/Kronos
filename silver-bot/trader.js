@@ -40,7 +40,7 @@ const {
 } = require('./config');
 const { getCandles, getCandles15m, getCandles4h, getAccountInfo, getOpenPositions, getCurrentPrice } = require('./market');
 const { writeLog } = require('./log');
-const { recordTradeOpen, recordTradeClose, recordExcursion, recordExternalTradeClose, removeOpenRecord, markPendingExit, resolveTimeStopWatches, readPerformance } = require('./performance');
+const { recordTradeOpen, recordTradeClose, recordExcursion, recordExternalTradeClose, removeOpenRecord, markPendingExit, resolveTimeStopWatches, recordSkippedFade, resolveSkippedFades, readPerformance } = require('./performance');
 const { sendAlert } = require('./alerts');
 const { getLiveRiskAssessment, isTradingHalted } = require('./live-risk-manager');
 const { calculateEMA, calculateRSI, calculateMACD } = require('./indicators');
@@ -250,10 +250,6 @@ function evaluateTrend(candles1h, candles4h, currentPrice, adx) {
 // ─── ENTRY: RANGE SLEEVE ──────────────────────────────────────────────────────
 
 function evaluateRange(candles1h, candles4h, currentPrice, adx) {
-  // Dead-market floor — don't fade a flatlined market (no oscillation = no bounce =
-  // the trade just sits until the time-stop). Targets the US30 time-stop losses.
-  if (adx < RANGE_ADX_FLOOR) return hold(`Range too dead to fade (ADX ${adx.toFixed(1)} < ${RANGE_ADX_FLOOR})`);
-
   const recent = candles1h.slice(-RANGE_LOOKBACK);
   if (recent.length < RANGE_LOOKBACK) return hold('Insufficient entry-TF data for range');
 
@@ -269,38 +265,41 @@ function evaluateRange(candles1h, candles4h, currentPrice, adx) {
   const rsi        = calculateRSI(candles1h.map(c => c.close), 14);
   const last       = candles1h[candles1h.length - 2] || candles1h[candles1h.length - 1]; // last completed
 
-  // Higher-timeframe trend filter — don't fade AGAINST a clear bias. Buying the range
-  // bottom into a clear downtrend (or selling the top into a clear uptrend) is fighting
-  // the bigger move — the "buying into a downtrend" problem. Same EMA50 + neutral band
-  // the trend sleeve uses. Fades still fire when the bias is neutral or on their side.
+  // Higher-timeframe bias — same EMA50 + neutral band the trend sleeve uses.
   const closes4h = candles4h.map(c => c.close);
   const biasEma  = closes4h.length >= 50 ? calculateEMA(closes4h, 50) : null;
   const biasBull = biasEma != null && price > biasEma + BIAS_NEUTRAL_ATR * atr;
   const biasBear = biasEma != null && price < biasEma - BIAS_NEUTRAL_ATR * atr;
+  const tooDead  = adx < RANGE_ADX_FLOOR;
+
+  // Guards run per-signal (not at the top) so we can log the fade we WOULD have taken
+  // to the skipped-fade what-if before standing aside. Trade behaviour is unchanged:
+  // a fade still needs a live-enough market (ADX ≥ floor) and a bias that isn't against
+  // it. distEma20-style what-if uses the mid as the would-be entry.
 
   // Fade the top: near range high, RSI stretched up, candle rejecting (bearish)
-  if (posInRange >= 1 - RANGE_EDGE_PCT && rsi >= RANGE_RSI_HI) {
-    if (biasBull) return hold(`Top-fade skipped — ${BIAS_TF} bias is UP (price above EMA50), won't sell into an uptrend`);
-    const rejecting = last.close < last.open || (last.high - Math.max(last.open, last.close)) > (last.high - last.low) * 0.4;
-    if (rejecting) {
-      const slPips = clampSlWithSpread(Math.round(((rangeHigh - price) / PIP_SIZE) + (atr / PIP_SIZE) * ATR_SL_MULT_RANGE), spreadPips);
-      const grade  = rsi >= 68 ? 'A' : 'B';
-      return buildEntry('RANGE', 'SELL', 'RANGE_FADE', grade, currentPrice, slPips, RANGE_TP_R, adx,
-        `Fade top of range [${rangeLow.toFixed(2)}–${rangeHigh.toFixed(2)}], pos ${(posInRange*100).toFixed(0)}%, RSI ${rsi.toFixed(0)} (grade ${grade}), SL ${slPips}p`,
-        { rsi, atrPips: atr / PIP_SIZE, posInRangePct: posInRange * 100 });
-    }
+  const topReject = last.close < last.open || (last.high - Math.max(last.open, last.close)) > (last.high - last.low) * 0.4;
+  if (posInRange >= 1 - RANGE_EDGE_PCT && rsi >= RANGE_RSI_HI && topReject) {
+    const slPips = clampSlWithSpread(Math.round(((rangeHigh - price) / PIP_SIZE) + (atr / PIP_SIZE) * ATR_SL_MULT_RANGE), spreadPips);
+    const wSL = price + slPips * PIP_SIZE, wTP = price - slPips * RANGE_TP_R * PIP_SIZE;
+    if (tooDead)  { recordSkippedFade('SELL', price, wSL, wTP, 'DEAD_MARKET');   return hold(`Top-fade skipped — range too dead (ADX ${adx.toFixed(1)} < ${RANGE_ADX_FLOOR})`); }
+    if (biasBull) { recordSkippedFade('SELL', price, wSL, wTP, 'COUNTER_TREND'); return hold(`Top-fade skipped — ${BIAS_TF} bias is UP (price above EMA50), won't sell into an uptrend`); }
+    const grade  = rsi >= 68 ? 'A' : 'B';
+    return buildEntry('RANGE', 'SELL', 'RANGE_FADE', grade, currentPrice, slPips, RANGE_TP_R, adx,
+      `Fade top of range [${rangeLow.toFixed(2)}–${rangeHigh.toFixed(2)}], pos ${(posInRange*100).toFixed(0)}%, RSI ${rsi.toFixed(0)} (grade ${grade}), SL ${slPips}p`,
+      { rsi, atrPips: atr / PIP_SIZE, posInRangePct: posInRange * 100 });
   }
   // Fade the bottom
-  if (posInRange <= RANGE_EDGE_PCT && rsi <= RANGE_RSI_LO) {
-    if (biasBear) return hold(`Bottom-fade skipped — ${BIAS_TF} bias is DOWN (price below EMA50), won't buy into a downtrend`);
-    const rejecting = last.close > last.open || (Math.min(last.open, last.close) - last.low) > (last.high - last.low) * 0.4;
-    if (rejecting) {
-      const slPips = clampSlWithSpread(Math.round(((price - rangeLow) / PIP_SIZE) + (atr / PIP_SIZE) * ATR_SL_MULT_RANGE), spreadPips);
-      const grade  = rsi <= 32 ? 'A' : 'B';
-      return buildEntry('RANGE', 'BUY', 'RANGE_FADE', grade, currentPrice, slPips, RANGE_TP_R, adx,
-        `Fade bottom of range [${rangeLow.toFixed(2)}–${rangeHigh.toFixed(2)}], pos ${(posInRange*100).toFixed(0)}%, RSI ${rsi.toFixed(0)} (grade ${grade}), SL ${slPips}p`,
-        { rsi, atrPips: atr / PIP_SIZE, posInRangePct: posInRange * 100 });
-    }
+  const botReject = last.close > last.open || (Math.min(last.open, last.close) - last.low) > (last.high - last.low) * 0.4;
+  if (posInRange <= RANGE_EDGE_PCT && rsi <= RANGE_RSI_LO && botReject) {
+    const slPips = clampSlWithSpread(Math.round(((price - rangeLow) / PIP_SIZE) + (atr / PIP_SIZE) * ATR_SL_MULT_RANGE), spreadPips);
+    const wSL = price - slPips * PIP_SIZE, wTP = price + slPips * RANGE_TP_R * PIP_SIZE;
+    if (tooDead)  { recordSkippedFade('BUY', price, wSL, wTP, 'DEAD_MARKET');   return hold(`Bottom-fade skipped — range too dead (ADX ${adx.toFixed(1)} < ${RANGE_ADX_FLOOR})`); }
+    if (biasBear) { recordSkippedFade('BUY', price, wSL, wTP, 'COUNTER_TREND'); return hold(`Bottom-fade skipped — ${BIAS_TF} bias is DOWN (price below EMA50), won't buy into a downtrend`); }
+    const grade  = rsi <= 32 ? 'A' : 'B';
+    return buildEntry('RANGE', 'BUY', 'RANGE_FADE', grade, currentPrice, slPips, RANGE_TP_R, adx,
+      `Fade bottom of range [${rangeLow.toFixed(2)}–${rangeHigh.toFixed(2)}], pos ${(posInRange*100).toFixed(0)}%, RSI ${rsi.toFixed(0)} (grade ${grade}), SL ${slPips}p`,
+      { rsi, atrPips: atr / PIP_SIZE, posInRangePct: posInRange * 100 });
   }
   return hold(`Range mode, price mid-range (${(posInRange*100).toFixed(0)}%) or RSI ${rsi.toFixed(0)} not stretched`);
 }
@@ -360,8 +359,9 @@ async function runTradingCycle() {
       getCurrentPrice(INSTRUMENT)
     ]);
 
-    // Update the post-cut watch on any timed-out trades (read-only what-if — does not trade)
+    // Update the read-only what-ifs (post-cut time-stop watch + skipped-fade watch). Neither trades.
     resolveTimeStopWatches(currentPrice.mid);
+    resolveSkippedFades(currentPrice.mid);
 
     // Manage any open trades first (scale-out / breakeven / trail)
     for (const pos of openPositions) await manageOpenPosition(pos, currentPrice);
