@@ -26,7 +26,7 @@ const { PIP_VALUE_PER_LOT, MAX_LOT } = require('./config');  // instrument-speci
 
 const MAX_RISK_PCT          = 0.01;   // 1% of account balance per trade (trade 1)
 const TRADE2_RISK_PCT       = 0.005;  // 0.5% for dip-continuation second trade
-const MIN_LOT               = 0.0002; // 0.0002 lot = 0.02 units — 2× the OANDA index minimum. MIN_LOT == MAX_LOT pins every US30 trade at exactly 0.02 units (~£42 margin / ~£2–2.80 risk). Deliberately a touch more space now the setup is proven live; still a tiny fraction of the shared account.
+const MIN_LOT               = 0.0004; // 0.0004 lot = 0.04 units — 4× the OANDA index minimum. MIN_LOT == MAX_LOT pins every US30 trade at exactly 0.04 units (~£84 margin / ~£4–5.60 risk). Sized up after the fade filters (dead-market floor + counter-trend filter) plugged the losing entries; still a small fraction of the shared account.
 // MAX_LOT now imported from config — instrument-specific sanity cap; 1% risk is the real limiter
 const COMPOUND_GROWTH_STEP  = 0.10;   // rebase every 10% account growth
 
