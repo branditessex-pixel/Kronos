@@ -96,6 +96,8 @@ const MACD_AGAINST_ATR_FRAC = 0.20; // momentum gate: skip a pullback whose MACD
 const BREAKOUT_MAX_CANDLES = 3;     // "fresh" breakout = ≤3 entry-TF closes beyond EMA20
 const RSI_HARD_BLOCK_HI    = 78;    // gold-model value — block BUY only when truly overbought
 const RSI_HARD_BLOCK_LO    = 22;    // gold-model value — block SELL only when truly oversold
+const BREAKOUT_MAX_RSI     = 72;    // extension cap: skip a breakout already overbought (BUY ≥ 72) / oversold (SELL ≤ 28) — don't chase the top of a rip (e.g. US30 bought RSI 77, +231p, then crashed out). Ported from gold's breakout-extension cap.
+const BREAKOUT_MAX_EXT_ATR = 2.5;   // ...or when price is more than this × ATR past the EMA20 (a violent, over-extended breakout). ATR-relative so it self-scales for the index.
 
 // RANGE sleeve tuning
 const RANGE_LOOKBACK   = 20;   // H1 candles defining the range
@@ -240,6 +242,12 @@ function evaluateTrend(candles1h, candles4h, currentPrice, adx) {
     // Gold model: fresh breakout only (no continuation/chase). Stale → hold.
     if (beyond > BREAKOUT_MAX_CANDLES) return hold(`${bias} breakout stale (${beyond} candles beyond EMA20)`);
     if (!macdFavours) return hold(`${bias} breakout but MACD histogram ${macd.histogram.toFixed(2)} against it`);
+    // Extension cap — don't CHASE an already-stretched breakout (bought the top of a rip,
+    // then crashed out: US30 bought RSI 77 / +231p and got stopped). Skip if overbought/
+    // oversold, or if price is far beyond the EMA20. Ported from the gold breakout cap.
+    if (bias === 'BUY'  && rsi >= BREAKOUT_MAX_RSI)       return hold(`BUY breakout too hot (RSI ${rsi.toFixed(0)} ≥ ${BREAKOUT_MAX_RSI}) — not chasing the top`);
+    if (bias === 'SELL' && rsi <= 100 - BREAKOUT_MAX_RSI) return hold(`SELL breakout too hot (RSI ${rsi.toFixed(0)} ≤ ${100 - BREAKOUT_MAX_RSI}) — not chasing the bottom`);
+    if (distPips > BREAKOUT_MAX_EXT_ATR * atrPips)        return hold(`${bias} breakout too extended (${distPips.toFixed(0)}p = ${(distPips / atrPips).toFixed(1)}×ATR past EMA20) — not chasing`);
     entryMode = 'BREAKOUT';
     grade = macdTurning ? 'A' : 'B';   // A if still strengthening
   } else {
