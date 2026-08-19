@@ -92,6 +92,7 @@ const MAX_TRADE_HOURS   = 6;     // wall-clock time stop — cut a trade that ne
 // Distances are ATR multiples so they scale with the timeframe automatically.
 const BIAS_NEUTRAL_ATR     = 0.15;  // dead band around the bias EMA, as a multiple of entry-TF ATR
 const PULLBACK_ZONE_ATR    = 0.65;  // how far from the entry EMA20 still counts as a pullback (× ATR)
+const MACD_AGAINST_ATR_FRAC = 0.20; // momentum gate: skip a pullback whose MACD histogram is against the trade by MORE than this × ATR — i.e. don't sell into a strong live bounce / buy into a strong live dip (the reversal-cluster losses, e.g. US30 7387/7391 selling with MACD +11/+15). Only affects grade-B pullbacks (momentum already favouring = grade A is untouched); self-scales with ATR.
 const BREAKOUT_MAX_CANDLES = 3;     // "fresh" breakout = ≤3 entry-TF closes beyond EMA20
 const RSI_HARD_BLOCK_HI    = 78;    // gold-model value — block BUY only when truly overbought
 const RSI_HARD_BLOCK_LO    = 22;    // gold-model value — block SELL only when truly oversold
@@ -220,6 +221,14 @@ function evaluateTrend(candles1h, candles4h, currentPrice, adx) {
     entryMode = 'PULLBACK';
     // Pullback: momentum must be re-aligning with the trend (turning), not already extended.
     if (!macdTurning) return hold(`${bias} pullback but MACD not turning back yet (hist ${macd.histogram.toFixed(2)} vs prev ${macd.prevHistogram.toFixed(2)})`);
+    // Momentum gate — a pullback should sell into FADING counter-momentum, not a strong
+    // live bounce. If the histogram is still firmly against the trade (> frac × ATR), it's
+    // the reversal-cluster entry (selling a rally that's still ripping up). Grade-A
+    // pullbacks (momentum already favouring) never hit this — only the grade-B subset.
+    const macdAgainst = bias === 'BUY' ? macd.histogram < 0 : macd.histogram > 0;
+    if (macdAgainst && Math.abs(macd.histogram) > MACD_AGAINST_ATR_FRAC * atrPips) {
+      return hold(`${bias} pullback but momentum still strongly against (MACD ${macd.histogram.toFixed(2)} = ${(Math.abs(macd.histogram) / atrPips).toFixed(2)}×ATR) — not trading into a live bounce/dip`);
+    }
     grade = macdFavours ? 'A' : 'B';   // A if momentum has already flipped to the trend side
   } else if (onTrendSide) {
     // Count consecutive H1 closes beyond EMA20 — "freshness" of the breakout.
