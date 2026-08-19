@@ -574,9 +574,15 @@ async function manageOpenPosition(pos, currentPrice) {
     // If it hasn't scaled out to breakeven within MAX_TRADE_HOURS, close it fully.
     // Stops one stuck trade from camping the book all day (blocking the opposite
     // side via the opposing guard and the same side via the pyramid guard).
+    // Only force-close during the ACTIVE session (07:00–20:00 UTC). Overnight the bot
+    // isn't hunting new entries, so "freeing the book" serves no purpose — and it would
+    // guillotine a trade that could still recover or reach its TP by morning. Overnight,
+    // trades are left to run to their own SL/TP.
     if (!atBreakeven && rec?.openTime) {
+      const utcHour = new Date().getUTCHours();
+      const timeStopActive = utcHour >= 7 && utcHour < 20;
       const ageHours = (Date.now() - new Date(rec.openTime).getTime()) / 3600000;
-      if (ageHours >= MAX_TRADE_HOURS) {
+      if (timeStopActive && ageHours >= MAX_TRADE_HOURS) {
         await http.put(`${BASE}/v3/accounts/${ACCOUNT}/trades/${pos.id}/close`, {});
         markPendingExit(pos.id, 'TIME_STOP');   // so checkClosedTrades books the true reason, not an inferred one
         console.log(`Trade ${pos.id} — TIME STOP after ${ageHours.toFixed(1)}h (never reached breakeven) — closed to free the book`);
