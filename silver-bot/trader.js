@@ -579,10 +579,16 @@ async function manageOpenPosition(pos, currentPrice) {
     // guillotine a trade that could still recover or reach its TP by morning. Overnight,
     // trades are left to run to their own SL/TP.
     if (!atBreakeven && rec?.openTime) {
-      const utcHour = new Date().getUTCHours();
+      const now = new Date();
+      const utcHour = now.getUTCHours();
       const timeStopActive = utcHour >= 7 && utcHour < 20;
+      // Exempt a trade carried through the overnight window — if it opened before today's
+      // active session began (07:00 UTC) it has already survived the night, so let it run
+      // to its own SL/TP rather than guillotining it the moment the morning session opens.
+      const todayActiveStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 7, 0, 0);
+      const carriedOvernight = new Date(rec.openTime).getTime() < todayActiveStart;
       const ageHours = (Date.now() - new Date(rec.openTime).getTime()) / 3600000;
-      if (timeStopActive && ageHours >= MAX_TRADE_HOURS) {
+      if (timeStopActive && !carriedOvernight && ageHours >= MAX_TRADE_HOURS) {
         await http.put(`${BASE}/v3/accounts/${ACCOUNT}/trades/${pos.id}/close`, {});
         markPendingExit(pos.id, 'TIME_STOP');   // so checkClosedTrades books the true reason, not an inferred one
         console.log(`Trade ${pos.id} — TIME STOP after ${ageHours.toFixed(1)}h (never reached breakeven) — closed to free the book`);
@@ -700,6 +706,12 @@ async function checkClosedTrades() {
 // Called frequently by index.js — trails/manages open trades with no candle fetch.
 async function runLightweightTrailUpdate() {
   try {
+    // Book + email any closes FIRST, every minute — including overnight and between the
+    // 5-min entry cycles. Previously booking/emailing only ran inside runTradingCycle
+    // (5-min, market-open), so a trade closed by the time-stop or an out-of-cycle SL/TP
+    // could close with no email. Runs even when nothing is open (a just-closed record
+    // still needs booking).
+    await checkClosedTrades();
     const positions = await getOpenPositions();
     if (positions.length === 0) return;
     const currentPrice = await getCurrentPrice(INSTRUMENT);
