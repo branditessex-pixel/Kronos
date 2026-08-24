@@ -60,6 +60,7 @@ const MAX_CONCURRENT_TRADES = 2;   // gold-model value (replicating the live gol
 // flip-flop. GOLD-MODEL VALUES (22/18) — this bot now replicates the live gold
 // strategy exactly on US30, so its edge is comparable like-for-like.
 const ADX_TREND_MIN = 22;
+const ADX_TREND_MAX = 31;   // exhaustion ceiling — US30's 30+ ADX bucket is 0W/2L so far (7387 @ ~31 −£1.86, 7561 @ 32.3 −£2.65) while sub-30 wins (7567 @ 29.4 +£3.65). Only trade the 22–31 sweet spot; stand aside above it. A notch tighter than gold's 32 because US30's losers sat right at 31–32.
 const ADX_RANGE_MAX = 18;
 const RANGE_ADX_FLOOR = 15;   // dead-market floor: below this the market is flatlined — a fade has no wobble to bounce off, so stand aside (both US30 time-stop losses were sub-15; the winner had ADX ~19)
 
@@ -189,6 +190,11 @@ function evaluateTrend(candles1h, candles4h, currentPrice, adx) {
   const price    = currentPrice.mid;
 
   if (closes4h.length < 50) return hold('Insufficient bias-TF data');
+
+  // Exhaustion ceiling — above ADX_TREND_MAX the trend is overheated. US30's 30+ entries
+  // have been the knife-catch/chase losses (0W/2L), while the sub-30 sweet spot wins.
+  // Skip BOTH pullbacks and breakouts up here; wait for it to cool into the 22–31 band.
+  if (adx > ADX_TREND_MAX) return hold(`Trend too extended (ADX ${adx.toFixed(1)} > ${ADX_TREND_MAX}) — exhaustion zone, standing aside`);
 
   const atr        = calcATR(candles1h, 14);
   const atrPips    = atr / PIP_SIZE;
