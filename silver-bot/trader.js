@@ -64,11 +64,13 @@ const ADX_TREND_MAX = 31;   // exhaustion ceiling — US30's 30+ ADX bucket is 0
 const ADX_RANGE_MAX = 18;
 const RANGE_ADX_FLOOR = 15;   // dead-market floor: below this the market is flatlined — a fade has no wobble to bounce off, so stand aside (both US30 time-stop losses were sub-15; the winner had ADX ~19)
 
-// ER constants retained for the calcER helper (exported for tests) but the regime
-// gate itself is DISABLED to match the gold model, which is ADX-only (the ER
-// trend-quality gate was a silver-only addition; gold reverted it — commit d48e000).
+// Efficiency Ratio (Kaufman) — now used as an ENTRY CHOP GATE on the trend sleeve:
+// ADX can't distinguish a real trend from a volatile range, but ER (net move ÷ total
+// path) can. Below ER_TREND_MIN the market is thrashing with no net progress, so the
+// trend sleeve stands aside (stops the "sold into the chop" losses). Regime detection
+// itself is still ADX-only; this is a quality filter layered on top.
 const ER_LOOKBACK  = 20;
-const ER_TREND_MIN = 0.30;
+const ER_TREND_MIN = 0.30;   // ER below this = chop → no trend entries. Starting point; tune from the reports.
 
 // Stops / targets. SL is ATR-based, so it auto-scales when the timeframe changes.
 // A spread floor keeps the stop sensible relative to silver's wide spread on fast
@@ -195,6 +197,15 @@ function evaluateTrend(candles1h, candles4h, currentPrice, adx) {
   // have been the knife-catch/chase losses (0W/2L), while the sub-30 sweet spot wins.
   // Skip BOTH pullbacks and breakouts up here; wait for it to cool into the 22–31 band.
   if (adx > ADX_TREND_MAX) return hold(`Trend too extended (ADX ${adx.toFixed(1)} > ${ADX_TREND_MAX}) — exhaustion zone, standing aside`);
+
+  // Chop gate — ADX can't tell a real trend from a volatile range; the Efficiency Ratio
+  // can. ER = |net move| ÷ total path over ER_LOOKBACK candles: ~1 = clean one-way trend,
+  // low = lots of movement but no net progress (chop). The repeated "sold into the chop"
+  // losses (7575/7599 — grade-A sells in a range that kept bouncing to the stop) were
+  // exactly this: high ADX, no progress. Skip ALL trend entries when ER says it's choppy,
+  // however trendy ADX looks.
+  const er = calcER(candles1h, ER_LOOKBACK);
+  if (er < ER_TREND_MIN) return hold(`Chop — efficiency ${er.toFixed(2)} < ${ER_TREND_MIN} (ADX ${adx.toFixed(1)} but price not progressing) — standing aside`);
 
   const atr        = calcATR(candles1h, 14);
   const atrPips    = atr / PIP_SIZE;
