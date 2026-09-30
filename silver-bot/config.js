@@ -67,7 +67,7 @@ const INSTRUMENT = (process.env.INSTRUMENT || 'US30_USD').trim();  // demo resea
 const INSTRUMENT_SPECS = {
   XAU_USD:  { pipSize: 0.10,  pipValuePerLot: 10,   maxLot: 10,  label: 'XAU/USD', name: 'Gold'   },
   XAG_USD:  { pipSize: 0.001, pipValuePerLot: 0.10, maxLot: 500, label: 'XAG/USD', name: 'Silver' },
-  US30_USD: { pipSize: 1.0,   pipValuePerLot: 100,  maxLot: 0.0005, label: 'US30', name: 'US30' }  // LIVE (shared small acct): 0.0005 lot = 0.05 units — 5× the OANDA index minimum. MIN_LOT also 0.0005, so every US30 trade is pinned to exactly 0.05 units (~£105 margin / ~£3.50–4.85 risk per trade ≈ 0.9–1.0% of the ~£387 account, deliberately nudged toward the 1% target). Still a hard cap vs the old 5 (=500 units); executeTrade backstop = MAX_LOT×100×5 = 0.25 units.
+  US30_USD: { pipSize: 1.0,   pipValuePerLot: 100,  maxLot: 0.0006, label: 'US30', name: 'US30' }  // LIVE (shared small acct): 0.0006 lot = 0.06 units — a ~20% step up from the prior 0.05 (2026-09-30). MIN_LOT also 0.0006, so every US30 trade is pinned to exactly 0.06 units (~£126 margin / ~£4–11 risk per trade, varies with stop width, on the current ~£329 shared account). Deliberately a small step, not a double: hold ~1 week at 0.06, then consider 0.07 if stable. Still a hard cap vs the old 5 (=500 units); executeTrade backstop = MAX_LOT×100×5 = 0.30 units.
 };
 
 const SPEC = INSTRUMENT_SPECS[INSTRUMENT] || INSTRUMENT_SPECS.XAU_USD;
